@@ -52,7 +52,7 @@ fun MetroScreen(vm: MetroViewModel) {
                 Text("↓", Modifier.width(28.dp), color = p.mute, fontSize = 12.sp)
             }
             LineView(state.trains, selected) { selected = it }
-            Footer()
+            Footer(state.observationCount, onClear = vm::clearObservations)
         }
     }
 
@@ -60,7 +60,7 @@ fun MetroScreen(vm: MetroViewModel) {
         // Ricalcolati a ogni secondo, così i minuti scalano mentre il pannello è aperto
         val toBattistini = remember(i, now / 1000, state.trains) { vm.arrivals(i, Direction.TO_BATTISTINI) }
         val toAnagnina = remember(i, now / 1000, state.trains) { vm.arrivals(i, Direction.TO_ANAGNINA) }
-        StationSheet(i, toBattistini, toAnagnina) { selected = null }
+        StationSheet(i, toBattistini, toAnagnina, onRecord = { dir -> vm.recordArrival(i, dir) }) { selected = null }
     }
 }
 
@@ -152,58 +152,105 @@ private fun TrainMarker(t: Train) {
         Direction.TO_ANAGNINA -> 29.dp
     }
     val glyph = when (t.direction) { Direction.TO_BATTISTINI -> "▲"; Direction.TO_ANAGNINA -> "▼" }
+    // Fermo in banchina: rosso linea A; in viaggio: scuro
     Box(
         Modifier.offset(x = x, y = ROW_H * pos + ROW_H / 2 - 9.dp)
-            .size(26.dp, 18.dp).clip(RoundedCornerShape(9.dp)).background(p.ink),
+            .size(26.dp, 18.dp).clip(RoundedCornerShape(9.dp)).background(if (t.stopped) p.lineA else p.ink),
         contentAlignment = Alignment.Center
-    ) { Text(glyph, color = p.bg, fontSize = 9.sp) }
+    ) { Text(glyph, color = if (t.stopped) androidx.compose.ui.graphics.Color.White else p.bg, fontSize = 9.sp) }
 }
 
 @Composable
-private fun Footer() {
+private fun Footer(observationCount: Int, onClear: () -> Unit) {
     val p = LocalPalette.current
     Text(
-        "Colonna sinistra: verso Battistini. Destra: verso Anagnina. Tocca una stazione per i prossimi passaggi. " +
+        "Colonna sinistra: verso Battistini. Destra: verso Anagnina. In rosso i treni fermi in stazione. " +
+            "Tocca una stazione per i prossimi passaggi.\n\n" +
             "Il feed in tempo reale di Roma Mobilità non include la metropolitana: posizioni e arrivi sono " +
             "calcolati dall'orario programmato (GTFS di Roma Mobilità, dati ATAC), che l'app riscarica ogni settimana. " +
-            "Ritardi e guasti non sono visibili.",
+            "Quando sei in stazione e arriva un treno, premi \"Treno arrivato ora\": l'app impara di quanto i treni " +
+            "sono avanti o indietro rispetto all'orario (per stazione, direzione e fascia oraria) e corregge le stime.",
         color = p.mute, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(top = 24.dp)
     )
+    Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            if (observationCount == 0) "Nessun passaggio registrato" else "Passaggi registrati: $observationCount",
+            Modifier.weight(1f), color = p.mute, fontSize = 13.sp
+        )
+        if (observationCount > 0) TextButton(onClick = onClear) { Text("Azzera", color = p.lineA) }
+    }
 }
+
+/** "+1:20" (in ritardo) o "−0:40" (in anticipo). */
+private fun formatOffset(s: Int) = "${if (s < 0) "−" else "+"}${kotlin.math.abs(s) / 60}:${"%02d".format(kotlin.math.abs(s) % 60)}"
+
+private fun formatEta(e: Eta) = if (e.highMin <= 1) "In arrivo" else "${e.lowMin}–${e.highMin} min"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun StationSheet(index: Int, toBattistini: List<Int>, toAnagnina: List<Int>, onDismiss: () -> Unit) {
+private fun StationSheet(
+    index: Int, toBattistini: StationArrivals, toAnagnina: StationArrivals,
+    onRecord: (Direction) -> Int?, onDismiss: () -> Unit,
+) {
     val p = LocalPalette.current
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = p.surface) {
         Column(Modifier.padding(horizontal = 22.dp).padding(bottom = 28.dp)) {
             Text(STATIONS[index].name, color = p.ink, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(10.dp))
-            DirectionRow("Verso Battistini", index == 0, toBattistini)
-            DirectionRow("Verso Anagnina", index == LAST, toAnagnina)
+            DirectionRow("Verso Battistini", terminus = index == 0, departure = index == LAST, toBattistini) {
+                onRecord(Direction.TO_BATTISTINI)
+            }
+            DirectionRow("Verso Anagnina", terminus = index == LAST, departure = index == 0, toAnagnina) {
+                onRecord(Direction.TO_ANAGNINA)
+            }
         }
     }
 }
 
+/** [departure]: capolinea di partenza, dove si registra la partenza invece dell'arrivo. */
 @Composable
-private fun DirectionRow(label: String, terminus: Boolean, etas: List<Int>) {
+private fun DirectionRow(label: String, terminus: Boolean, departure: Boolean, a: StationArrivals, onRecord: () -> Int?) {
     val p = LocalPalette.current
+    var recorded by remember { mutableStateOf<String?>(null) }
     HorizontalDivider(color = p.rule)
     Column(Modifier.padding(vertical = 10.dp)) {
         Text(label, color = p.mute, fontSize = 14.sp)
-        when {
-            terminus -> Text("Capolinea", color = p.mute, fontSize = 16.sp)
-            etas.isEmpty() -> Text("Nessun treno in programma", color = p.mute, fontSize = 16.sp)
-            else -> Row(verticalAlignment = Alignment.Bottom) {
-                val first = etas.first()
-                Text(
-                    if (first == 0) "In arrivo" else "$first min",
-                    color = p.lineA, fontSize = 30.sp, fontWeight = FontWeight.SemiBold
-                )
-                if (etas.size > 1) {
-                    Text("   poi ${etas.drop(1).joinToString(", ")} min", color = p.ink, fontSize = 17.sp,
-                        modifier = Modifier.padding(bottom = 4.dp))
+        if (terminus) {
+            Text("Capolinea", color = p.mute, fontSize = 16.sp)
+        } else {
+            val etas = if (a.trainAtStation) a.etas.drop(1) else a.etas
+            when {
+                a.trainAtStation -> Row(verticalAlignment = Alignment.Bottom) {
+                    Text("Treno in stazione", color = p.lineA, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
+                    if (etas.isNotEmpty()) {
+                        Text("   poi ${etas.first().let { "${it.lowMin}–${it.highMin}" }} min", color = p.ink, fontSize = 17.sp,
+                            modifier = Modifier.padding(bottom = 3.dp))
+                    }
                 }
+                etas.isEmpty() -> Text("Nessun treno in programma", color = p.mute, fontSize = 16.sp)
+                else -> Row(verticalAlignment = Alignment.Bottom) {
+                    Text(formatEta(etas.first()), color = p.lineA, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
+                    if (etas.size > 1) {
+                        Text("   poi ${etas.drop(1).joinToString(", ") { "${it.lowMin}–${it.highMin}" }} min",
+                            color = p.ink, fontSize = 17.sp, modifier = Modifier.padding(bottom = 4.dp))
+                    }
+                }
+            }
+            val d = a.delay
+            Text(
+                if (d.count == 0) "Stima dall'orario, ±1 min"
+                else "Corretta con ${d.count} passaggi registrati: ${formatOffset(d.medianS)} rispetto all'orario",
+                color = p.mute, fontSize = 12.sp
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(
+                    onClick = {
+                        recorded = onRecord()?.let { "Registrato: ${formatOffset(it)} rispetto all'orario" }
+                            ?: "Nessun treno in orario vicino a adesso: non registrato"
+                    },
+                    contentPadding = PaddingValues(0.dp),
+                ) { Text(if (departure) "Treno partito ora" else "Treno arrivato ora", color = p.lineA) }
+                recorded?.let { Text("  $it", color = p.mute, fontSize = 12.sp) }
             }
         }
     }

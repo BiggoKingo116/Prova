@@ -73,22 +73,57 @@ class ScheduleTest {
 
     @Test fun positionsFollowTimetable() {
         val s = ZipFile(sampleZip()).use { GtfsParser.parse(it) }
-        assertEquals(0.5f, s.trainsAt(at("08:01:00")).single().position, 0.001f)
-        assertEquals(1f, s.trainsAt(at("08:02:30")).single().position, 0.001f) // fermo in stazione
-        assertEquals(1.5f, s.trainsAt(at("08:04:00")).single().position, 0.001f)
+        // In viaggio dalle 08:00:00 fino a 12 s prima dell'arrivo delle 08:02 (sosta simulata)
+        assertEquals(60f / 108, s.trainsAt(at("08:01:00")).single().position, 0.001f)
+        assertEquals(Train("t1", 1f, Direction.TO_ANAGNINA, stopped = true), s.trainsAt(at("08:02:30")).single())
+        assertEquals(Train("t1", 1f, Direction.TO_ANAGNINA, stopped = true), s.trainsAt(at("08:01:50")).single())
+        assertEquals(1f + 48f / 108, s.trainsAt(at("08:04:00")).single().position, 0.001f)
+        assertEquals(false, s.trainsAt(at("08:04:00")).single().stopped)
+        // Fermo ai capolinea poco prima della partenza e poco dopo l'arrivo
+        assertEquals(Train("t1", 0f, Direction.TO_ANAGNINA, stopped = true), s.trainsAt(at("07:59:30")).single())
+        assertEquals(Train("t1", 2f, Direction.TO_ANAGNINA, stopped = true), s.trainsAt(at("08:05:10")).single())
         assertTrue(s.trainsAt(at("08:10:00")).isEmpty())
+        // Con un ritardo stimato di 1 minuto il treno è dove l'orario lo metteva un minuto prima
+        assertEquals(60f / 108, s.trainsAt(at("08:02:00")) { 60 }.single().position, 0.001f)
         // La corsa delle 23:58 è ancora in viaggio dopo mezzanotte, il giorno dopo
         val night = s.trainsAt(at("00:00:00", "2026-09-30")).single()
         assertEquals("t2", night.id)
         assertEquals(LAST - 0.5f, night.position, 0.001f)
     }
 
-    @Test fun arrivalsInMinutes() {
+    @Test fun passagesAndOffsets() {
         val s = ZipFile(sampleZip()).use { GtfsParser.parse(it) }
-        assertEquals(listOf(5), s.arrivals(2, Direction.TO_ANAGNINA, at("08:00:00")))
-        assertEquals(listOf(0), s.arrivals(2, Direction.TO_ANAGNINA, at("08:04:30")))
-        assertTrue(s.arrivals(2, Direction.TO_BATTISTINI, at("08:00:00")).isEmpty())
-        assertEquals(listOf(3), s.arrivals(LAST - 1, Direction.TO_BATTISTINI, at("23:59:00")))
+        assertEquals(listOf(300), s.passages(2, Direction.TO_ANAGNINA, at("08:00:00")))
+        assertEquals(listOf(-60), s.passages(2, Direction.TO_ANAGNINA, at("08:06:00")))
+        assertTrue(s.passages(2, Direction.TO_BATTISTINI, at("08:00:00")).isEmpty())
+        assertEquals(listOf(180), s.passages(LAST - 1, Direction.TO_BATTISTINI, at("23:59:00")))
+        // Treno visto arrivare alle 08:06 dove l'orario diceva 08:05: un minuto di ritardo
+        assertEquals(60, s.offsetFromNearest(2, Direction.TO_ANAGNINA, at("08:06:00")))
+        assertEquals(-30, s.offsetFromNearest(2, Direction.TO_ANAGNINA, at("08:04:30")))
+        assertEquals(null, s.offsetFromNearest(2, Direction.TO_ANAGNINA, at("09:00:00")))
+    }
+
+    @Test fun etaIntervals() {
+        assertEquals(listOf(Eta(3, 5)), etas(listOf(240), NO_DATA))
+        assertEquals(listOf(Eta(0, 2)), etas(listOf(30), NO_DATA))
+        assertTrue(etas(listOf(-90), NO_DATA).isEmpty()) // già passato anche col margine
+        // In ritardo di 90 s: un treno che per l'orario è passato 60 s fa deve ancora arrivare
+        assertEquals(listOf(Eta(0, 2)), etas(listOf(-60), DelayEstimate(90, 60, 5)))
+        assertEquals(listOf(Eta(1, 3), Eta(4, 6)), etas(listOf(300, 120, 900), NO_DATA, count = 2))
+    }
+
+    @Test fun delayModelPrefersSimilarObservations() {
+        val nine = ZonedDateTime.parse("2026-09-29T09:10:00+02:00[Europe/Rome]").toInstant().toEpochMilli()
+        val obs = listOf(60, 90, 120).map { Observation(nine, 5, Direction.TO_ANAGNINA, it) } +
+            listOf(-30, -30, -30).map { Observation(nine, 20, Direction.TO_ANAGNINA, it) }
+        val m = DelayModel(obs)
+        assertEquals(DelayEstimate(90, 60, 3), m.forStation(5, Direction.TO_ANAGNINA, 9))
+        assertEquals(DelayEstimate(-30, 60, 3), m.forStation(20, Direction.TO_ANAGNINA, 10))
+        // Stazione senza dati: si usa tutta la direzione nella stessa fascia oraria
+        assertEquals(6, m.forStation(12, Direction.TO_ANAGNINA, 9).count)
+        // Altra direzione, o meno di 3 passaggi: nessuna correzione
+        assertEquals(NO_DATA, m.forLine(Direction.TO_BATTISTINI, 9))
+        assertEquals(NO_DATA, DelayModel(obs.take(2)).forLine(Direction.TO_ANAGNINA, 9))
     }
 
     @Test fun cacheRoundTrip() {

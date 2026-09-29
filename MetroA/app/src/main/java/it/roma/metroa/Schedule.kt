@@ -16,7 +16,16 @@ const val METRO_A_ROUTE_ID = "MEA"
 
 val ROME: ZoneId = ZoneId.of("Europe/Rome")
 
-data class Train(val id: String, val position: Float, val direction: Direction)
+/** [stopped]: il treno è fermo in banchina alla stazione [position] (che allora è un intero). */
+data class Train(val id: String, val position: Float, val direction: Direction, val stopped: Boolean = false)
+
+/** Nel GTFS arrivo e partenza coincidono: si assume una sosta di 2 × [DWELL_HALF_S] secondi attorno all'orario. */
+private const val DWELL_HALF_S = 12
+/** Quanto prima della partenza un treno è mostrato fermo al capolinea, e quanto resta dopo l'arrivo. */
+private const val TERMINUS_BEFORE_S = 60
+private const val TERMINUS_AFTER_S = 30
+/** Quanto indietro guardare per gli arrivi: un treno in ritardo può passare dopo l'orario. */
+private const val LOOKBACK_S = 600
 
 /** Una corsa programmata: stazioni toccate (indici in STATIONS) con orari in secondi dall'inizio del giorno di servizio. */
 class ScheduledTrip(
@@ -36,30 +45,42 @@ class Schedule(
 ) {
     fun covers(date: LocalDate) = servicesByDate.containsKey(dateKey(date))
 
-    /** Posizione (indice frazionario) di ogni treno in viaggio secondo l'orario. */
-    fun trainsAt(now: ZonedDateTime): List<Train> = activeTrips(now).mapNotNull { (trip, t) ->
-        val last = trip.stations.lastIndex
-        if (t < trip.dep[0] || t > trip.arr[last]) return@mapNotNull null
-        var pos = trip.stations[last].toFloat()
-        for (k in 0 until last) {
-            if (t <= trip.dep[k]) { pos = trip.stations[k].toFloat(); break }
-            if (t < trip.arr[k + 1]) {
-                val f = (t - trip.dep[k]).toFloat() / (trip.arr[k + 1] - trip.dep[k])
-                pos = trip.stations[k] + (trip.stations[k + 1] - trip.stations[k]) * f
-                break
+    /** Posizione di ogni treno in viaggio. [delayS]: ritardo stimato per direzione, in secondi (positivo = in ritardo). */
+    fun trainsAt(now: ZonedDateTime, delayS: (Direction) -> Int = { 0 }): List<Train> =
+        activeTrips(now).mapNotNull { (trip, now0) ->
+            val t = now0 - delayS(trip.direction)
+            val last = trip.stations.lastIndex
+            if (t < trip.dep[0] - TERMINUS_BEFORE_S || t > trip.arr[last] + TERMINUS_AFTER_S) return@mapNotNull null
+            fun stoppedAt(k: Int) = Train(trip.id, trip.stations[k].toFloat(), trip.direction, stopped = true)
+            if (t <= trip.dep[0]) return@mapNotNull stoppedAt(0)
+            if (t >= trip.arr[last]) return@mapNotNull stoppedAt(last)
+            for (k in 0 until last) {
+                // Sosta alla stazione k (esclusa la partenza, già gestita sopra)
+                val leave = if (k == 0) trip.dep[0] else trip.dep[k] + DWELL_HALF_S
+                if (k > 0 && t <= leave) return@mapNotNull stoppedAt(k)
+                val reach = trip.arr[k + 1] - if (k + 1 == last) 0 else DWELL_HALF_S
+                if (t < reach) {
+                    val f = ((t - leave).toFloat() / (reach - leave)).coerceIn(0f, 1f)
+                    val pos = trip.stations[k] + (trip.stations[k + 1] - trip.stations[k]) * f
+                    return@mapNotNull Train(trip.id, pos, trip.direction)
+                }
             }
-        }
-        Train(trip.id, pos, trip.direction)
-    }.toList()
+            stoppedAt(last)
+        }.toList()
 
-    /** Minuti ai prossimi passaggi programmati nella stazione, nella direzione data. */
-    fun arrivals(station: Int, dir: Direction, now: ZonedDateTime, count: Int = 3): List<Int> =
+    /** Secondi mancanti ai passaggi programmati nella stazione (anche negativi fino a -[LOOKBACK_S]), in ordine. */
+    fun passages(station: Int, dir: Direction, now: ZonedDateTime): List<Int> =
         activeTrips(now).filter { it.first.direction == dir }.mapNotNull { (trip, t) ->
             val k = trip.stations.indexOf(station)
             if (k < 0) return@mapNotNull null
             val time = if (k == 0) trip.dep[0] else trip.arr[k]
-            if (time >= t) (time - t) / 60 else null
-        }.sorted().take(count).toList()
+            (time - t).takeIf { it >= -LOOKBACK_S }
+        }.sorted().toList()
+
+    /** Scarto (secondi, positivo = in ritardo) fra adesso e il passaggio programmato più vicino, entro 10 minuti. */
+    fun offsetFromNearest(station: Int, dir: Direction, now: ZonedDateTime): Int? =
+        passages(station, dir, now).minByOrNull { kotlin.math.abs(it) }
+            ?.takeIf { kotlin.math.abs(it) <= LOOKBACK_S }?.let { -it }
 
     /** Corse dei giorni di servizio di oggi e di ieri (quelle dopo mezzanotte hanno orari oltre le 24:00). */
     private fun activeTrips(now: ZonedDateTime): Sequence<Pair<ScheduledTrip, Int>> {
