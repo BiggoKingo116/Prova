@@ -8,6 +8,9 @@ App minimale che mostra i treni della linea A sui due binari, con i prossimi arr
 3. Collega il telefono con il debug USB attivo (o usa un emulatore) e premi ▶ Run.
    Per un file APK da installare: Build → Build APK(s).
 
+Da riga di comando (serve l'Android SDK, con `ANDROID_HOME` impostato o `sdk.dir` in `local.properties`):
+`./gradlew assembleDebug` → l'APK finisce in `app/build/outputs/apk/debug/app-debug.apk`.
+
 ## Da dove arrivano i dati
 Feed GTFS-Realtime "Vehicle Positions" di Roma Servizi per la Mobilità (dati ATAC, licenza CC-BY 3.0),
 aggiornato ogni 15 secondi mentre l'app è aperta.
