@@ -33,6 +33,9 @@ private const val LOOKBACK_S = 600
  */
 data class Passage(val inS: Int, val beforeS: Int, val afterS: Int)
 
+/** Corsa programmata riconosciuta: [scheduledMs] è l'orario previsto (ms) per ogni stazione che tocca. */
+data class TripMatch(val tripId: String, val scheduledMs: Map<Int, Long>)
+
 /** Una corsa programmata: stazioni toccate (indici in STATIONS) con orari in secondi dall'inizio del giorno di servizio. */
 class ScheduledTrip(
     val id: String,
@@ -121,6 +124,28 @@ class Schedule(
         val nowMs = now.toInstant().toEpochMilli()
         return passages(station, dir, now).map { it.inS + delayS }.filter { it >= 0 }.sorted().take(count)
             .map { nowMs + it * 1000L }
+    }
+
+    /**
+     * La corsa programmata che passa in [station] verso [dir] più vicino all'istante [atMs], con l'orario
+     * (ms) di ogni sua stazione: serve a riconoscere su quale treno è salito l'utente. Null se nessuna entro 10 minuti.
+     */
+    fun matchTrip(station: Int, dir: Direction, atMs: Long): TripMatch? {
+        val now = java.time.Instant.ofEpochMilli(atMs).atZone(ROME)
+        var best: Pair<ScheduledTrip, Int>? = null
+        var bestGap = Int.MAX_VALUE
+        for ((trip, t) in activeTrips(now)) {
+            if (trip.direction != dir) continue
+            val k = trip.stations.indexOf(station)
+            if (k < 0) continue
+            val gap = kotlin.math.abs((if (k == 0) trip.dep[0] else trip.arr[k]) - t)
+            if (gap < bestGap) { bestGap = gap; best = trip to t }
+        }
+        val (trip, t) = best?.takeIf { bestGap <= LOOKBACK_S } ?: return null
+        val times = trip.stations.indices.associate { k ->
+            trip.stations[k] to atMs + ((if (k == 0) trip.dep[0] else trip.arr[k]) - t) * 1000L
+        }
+        return TripMatch(trip.id, times)
     }
 
     /** Scarto (secondi, positivo = in ritardo) fra adesso e il passaggio programmato più vicino, entro 10 minuti. */

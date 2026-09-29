@@ -14,16 +14,21 @@ create table if not exists public.reports (
     created_at timestamptz not null default now()
 );
 
--- ARRIVAL: "treno arrivato adesso"; MANUAL: scelta a mano; CONFIRM/DENY: conferma o smentita con un tocco
+-- Viaggi "sono sul treno": tutte le stazioni passate in un viaggio hanno lo stesso trip_id
+alter table public.reports add column if not exists trip_id uuid;
+
+-- ARRIVAL: "treno arrivato adesso"; MANUAL: scelta a mano; CONFIRM/DENY: conferma o smentita con un tocco;
+-- TRIP: stazione passata durante un viaggio (mai le coordinate, solo stazione e ora)
 alter table public.reports drop constraint if exists reports_source_check;
 alter table public.reports add constraint reports_source_check
-    check (source in ('ARRIVAL', 'MANUAL', 'CONFIRM', 'DENY'));
+    check (source in ('ARRIVAL', 'MANUAL', 'CONFIRM', 'DENY', 'TRIP'));
 
 create index if not exists reports_time_ms on public.reports (time_ms);
 create index if not exists reports_device on public.reports (device_id, created_at);
+create index if not exists reports_trip on public.reports (trip_id, time_ms) where trip_id is not null;
 
 -- Controlli lato server: ora plausibile; per telefono al massimo una segnalazione ogni 30 secondi
--- sulla stessa stazione e direzione, e 30 all'ora in tutto.
+-- sulla stessa stazione e direzione, e 60 all'ora in tutto (un viaggio da capolinea a capolinea ne fa 26).
 create or replace function public.reports_check() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
@@ -38,7 +43,7 @@ begin
         raise exception 'segnalazione doppia';
     end if;
     if (select count(*) from public.reports
-        where device_id = new.device_id and created_at > now() - interval '1 hour') >= 30 then
+        where device_id = new.device_id and created_at > now() - interval '1 hour') >= 60 then
         raise exception 'troppe segnalazioni';
     end if;
     return new;
@@ -58,6 +63,32 @@ drop policy if exists "aggiungere" on public.reports;
 create policy "aggiungere" on public.reports for insert to anon with check (true);
 
 revoke all on public.reports from anon;
-grant insert (id, time_ms, station, direction, offset_s, source, device_id) on public.reports to anon;
+grant insert (id, time_ms, station, direction, offset_s, source, device_id, trip_id) on public.reports to anon;
 -- device_id resta escluso dalla lettura
-grant select (id, seq, time_ms, station, direction, offset_s, source, created_at) on public.reports to anon;
+grant select (id, seq, time_ms, station, direction, offset_s, source, created_at, trip_id) on public.reports to anon;
+
+-- Tempo reale di ogni tratto di ogni viaggio: da una stazione registrata alla successiva dello stesso viaggio.
+-- Stazioni numerate da 0 (Battistini) a 26 (Anagnina).
+create or replace view public.trip_segments with (security_invoker = true) as
+select trip_id, direction, from_station, to_station, seconds, time_ms
+from (
+    select trip_id, direction,
+           lag(station) over w as from_station, station as to_station,
+           (time_ms - lag(time_ms) over w) / 1000 as seconds, time_ms
+    from public.reports
+    where trip_id is not null
+    window w as (partition by trip_id order by time_ms)
+) s
+where from_station is not null;
+
+-- Media per tratta negli ultimi 60 giorni (solo tratte fra stazioni vicine, senza valori assurdi)
+create or replace view public.segment_times with (security_invoker = true) as
+select direction, from_station, to_station,
+       round(avg(seconds))::int as avg_seconds, count(*) as trips
+from public.trip_segments
+where abs(to_station - from_station) = 1
+  and seconds between 20 and 600
+  and time_ms > (extract(epoch from now()) * 1000)::bigint - 60::bigint * 24 * 3600 * 1000
+group by direction, from_station, to_station;
+
+grant select on public.trip_segments, public.segment_times to anon;

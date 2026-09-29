@@ -12,7 +12,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
-import java.io.IOException
 import java.time.ZonedDateTime
 import java.util.UUID
 
@@ -49,12 +48,8 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = ScheduleRepository(app.filesDir, app.cacheDir)
     private val db = ReportDb(app)
     private val prefs = app.getSharedPreferences("metroa", 0)
-    private val api = BuildConfig.SUPABASE_URL.takeIf { it.isNotBlank() && BuildConfig.SUPABASE_ANON_KEY.isNotBlank() }
-        ?.let { ReportApi(it.trim().trimEnd('/').removeSuffix("/rest/v1"), BuildConfig.SUPABASE_ANON_KEY) }
-
-    /** Identificativo anonimo del telefono, usato dal server solo per limitare lo spam. */
-    private val deviceId: String = prefs.getString("device_id", null)
-        ?: UUID.randomUUID().toString().also { prefs.edit().putString("device_id", it).apply() }
+    private val api = reportApiOrNull()
+    private val deviceId: String = deviceId(app)
 
     @Volatile private var schedule: Schedule? = null
     @Volatile private var model = DelayModel(emptyList())
@@ -80,11 +75,28 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
         if (new.favorites != old.favorites) updateWidget()
     }
 
+    /** Viaggio "sono sul treno" in corso o appena concluso (riepilogo). */
+    val trip: StateFlow<TripState?> = TripTracker.state
+
     init {
         app.deleteDatabase("observations.db") // registro locale delle versioni precedenti, sostituito da reports.db
+        TripTracker.load(app)
         load()
         viewModelScope.launch { reloadReports() }
+        // Ogni stazione registrata nel viaggio è una segnalazione: aggiorna le stime e sincronizza
+        viewModelScope.launch {
+            var passages = -1
+            trip.collect { t ->
+                val n = t?.passages?.size ?: 0
+                if (n != passages) { passages = n; reloadReports(); sync() }
+            }
+        }
     }
+
+    fun startTrip(dir: Direction, boardStation: Int) = TripTracker.start(getApplication(), dir, boardStation)
+    fun markNextStation() = TripTracker.markNextStation(getApplication())
+    fun finishTrip() = TripTracker.finish(getApplication())
+    fun dismissTrip() = TripTracker.dismiss(getApplication())
 
     /** Carica l'orario salvato e, se è vecchio o assente, riscarica il GTFS. */
     fun load() {
@@ -275,11 +287,7 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun syncNow() = withContext(Dispatchers.IO) {
         val api = api
         if (api != null) try {
-            for (r in db.pending()) {
-                val res = api.upload(r, deviceId)
-                // Rifiutata dal server (doppia, fuori limiti): resta sul telefono ma non si ritenta
-                if (res.ok || res.permanent) db.markUploaded(r.id) else throw IOException("Invio non riuscito")
-            }
+            uploadPending(db, api, deviceId)
             val since = System.currentTimeMillis() - 60L * 24 * 3600 * 1000
             var seq = prefs.getLong("last_seq", 0)
             while (true) {

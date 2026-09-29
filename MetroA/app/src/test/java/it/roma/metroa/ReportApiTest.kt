@@ -33,6 +33,15 @@ class ReportApiTest {
         assertEquals("TO_ANAGNINA", body.getString("direction"))
         assertEquals("ARRIVAL", body.getString("source"))
         assertEquals("device-1", body.getString("device_id"))
+        assertFalse(body.has("trip_id")) // segnalazione normale: niente viaggio
+    }
+
+    @Test fun tripPassageSendsTripId() {
+        server.enqueue(MockResponse().setResponseCode(201))
+        api.upload(report.copy(source = ReportSource.TRIP, tripId = "22222222-2222-2222-2222-222222222222"), "device-1")
+        val body = JSONObject(server.takeRequest().body.readUtf8())
+        assertEquals("TRIP", body.getString("source"))
+        assertEquals("22222222-2222-2222-2222-222222222222", body.getString("trip_id"))
     }
 
     @Test fun rejectedUploadIsNotRetried() {

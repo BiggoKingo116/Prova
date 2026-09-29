@@ -209,7 +209,7 @@ fun DelayLine(dir: Direction, d: DelayEstimate) {
 }
 
 @Composable
-private fun StationPicker(station: Int, onPick: (Int) -> Unit) {
+fun StationPicker(station: Int, onPick: (Int) -> Unit) {
     val p = LocalPalette.current
     var open by remember { mutableStateOf(false) }
     Box {

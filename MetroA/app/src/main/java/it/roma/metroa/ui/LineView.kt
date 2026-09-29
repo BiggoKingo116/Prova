@@ -48,6 +48,8 @@ fun LineView(
     nearby: Int?,
     nextTrains: Map<Direction, List<Arrival?>>,
     range: IntRange = 0..LAST,
+    /** Il treno su cui è l'utente ("sono sul treno"), evidenziato. */
+    myTrainId: String? = null,
     onSelect: (Int) -> Unit,
 ) {
     val p = LocalPalette.current
@@ -91,7 +93,7 @@ fun LineView(
         val lo = range.first.toFloat(); val hi = range.last.toFloat()
         trains.filter { it.position in lo..hi }.forEach { t ->
             val col = if (t.direction == Direction.TO_BATTISTINI) COL_BATTISTINI else COL_ANAGNINA
-            key(t.id) { TrainMarker(t, along = y(yAt(centers, t.position)), across = col.dp, horizontal = false, settings) }
+            key(t.id) { TrainMarker(t, along = y(yAt(centers, t.position)), across = col.dp, horizontal = false, settings, mine = t.id == myTrainId) }
         }
     }
 }
@@ -127,7 +129,7 @@ private fun NextTrainLabel(station: Int, s: AppSettings, next: Map<Direction, Li
  * centro della colonna (o riga) della sua direzione.
  */
 @Composable
-private fun TrainMarker(t: Train, along: Dp, across: Dp, horizontal: Boolean, s: AppSettings) {
+private fun TrainMarker(t: Train, along: Dp, across: Dp, horizontal: Boolean, s: AppSettings, mine: Boolean = false) {
     val p = LocalPalette.current
     // Le posizioni arrivano ogni secondo: un'interpolazione lineare di un secondo dà un movimento continuo
     val pos by animateDpAsState(along, if (s.smoothMotion) tween(1000, easing = LinearEasing) else snap(), label = "pos")
@@ -157,7 +159,10 @@ private fun TrainMarker(t: Train, along: Dp, across: Dp, horizontal: Boolean, s:
             .scale(if (t.stopped && s.pulseStopped) breathe else 1f)
             .size(w.dp, h.dp)
             .clip(if (s.trainStyle == TrainStyle.DOT) CircleShape else RoundedCornerShape((minOf(w, h) / 2).dp))
-            .background(color),
+            .background(color)
+            // Il proprio treno: anello del colore della linea
+            .then(if (mine) Modifier.border(3.dp, p.lineA,
+                if (s.trainStyle == TrainStyle.DOT) CircleShape else RoundedCornerShape((minOf(w, h) / 2).dp)) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
         if (s.trainStyle != TrainStyle.DOT) Text(glyph, color = glyphColor, fontSize = (9 * s.trainSize.scale).sp)
@@ -177,7 +182,7 @@ private const val ROW_ANAGNINA = 46f
 @Composable
 fun HorizontalLineView(
     trains: List<Train>, settings: AppSettings, segmentSeconds: FloatArray?,
-    selected: Int?, nearby: Int?, onSelect: (Int) -> Unit,
+    selected: Int?, nearby: Int?, myTrainId: String? = null, onSelect: (Int) -> Unit,
 ) {
     val p = LocalPalette.current
     val centers = remember(settings, segmentSeconds) { stationCenters(settings, segmentSeconds) }
@@ -216,7 +221,7 @@ fun HorizontalLineView(
             }
             trains.forEach { t ->
                 val row = if (t.direction == Direction.TO_BATTISTINI) ROW_BATTISTINI else ROW_ANAGNINA
-                key(t.id) { TrainMarker(t, along = x(yAt(centers, t.position)), across = row.dp, horizontal = true, settings) }
+                key(t.id) { TrainMarker(t, along = x(yAt(centers, t.position)), across = row.dp, horizontal = true, settings, mine = t.id == myTrainId) }
             }
         }
     }

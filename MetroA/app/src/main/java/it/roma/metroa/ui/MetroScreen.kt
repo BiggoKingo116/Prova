@@ -104,6 +104,7 @@ private fun LineScreen(
 ) {
     val p = LocalPalette.current
     var selected by remember { mutableStateOf<Int?>(null) }
+    var startingTrip by remember { mutableStateOf(false) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1000) } }
 
@@ -115,6 +116,15 @@ private fun LineScreen(
             .padding(bottom = 32.dp)
     ) {
         Header(state, onRetry = vm::load, onSettings = onSettings)
+
+        val trip by vm.trip.collectAsStateWithLifecycle()
+        val t = trip
+        Appearing(visible = t != null) {
+            if (t != null) {
+                TripCard(t, locationTracked = state.location is Where.Found,
+                    onMark = vm::markNextStation, onFinish = vm::finishTrip, onDismiss = vm::dismissTrip)
+            }
+        }
 
         state.alerts.forEach { a -> key("alert", a.direction) { Appearing { AlertCard(a) } } }
 
@@ -153,13 +163,22 @@ private fun LineScreen(
         }
 
         val haptic = LocalHapticFeedback.current
-        Button(
-            onClick = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onFeedback(null) },
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            shape = RoundedCornerShape(50),
-            colors = ButtonDefaults.buttonColors(containerColor = p.lineA, contentColor = Color.White),
-            contentPadding = PaddingValues(vertical = 14.dp),
-        ) { Text("Segnala anticipo o ritardo", fontSize = 16.sp) }
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(
+                onClick = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onFeedback(null) },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(50),
+                colors = ButtonDefaults.buttonColors(containerColor = p.lineA, contentColor = Color.White),
+                contentPadding = PaddingValues(vertical = 14.dp),
+            ) { Text("Segnala", fontSize = 16.sp) }
+            OutlinedButton(
+                onClick = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); startingTrip = true },
+                enabled = trip?.active != true,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(50),
+                contentPadding = PaddingValues(vertical = 14.dp),
+            ) { Text("🚇 Sono sul treno", fontSize = 16.sp, color = if (trip?.active != true) p.lineA else p.mute) }
+        }
 
         val nextTrains = remember(settings.nextTrainLabels, now / 1000) {
             if (settings.nextTrainLabels == NextTrainLabels.NONE) emptyMap()
@@ -171,14 +190,16 @@ private fun LineScreen(
                 Text("↑ $up  ↓ $down", Modifier.weight(1f), color = p.mute, fontSize = 12.sp)
                 Text("in rosso: fermi in stazione", color = p.mute, fontSize = 12.sp)
             }
+            val myTrain = trip?.takeIf { it.active }?.match?.tripId
             // Telefono girato: linea in orizzontale (se non disattivato nelle impostazioni)
             val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
             if (landscape && settings.horizontalInLandscape) {
-                HorizontalLineView(state.trains, settings, state.segmentSeconds, selected, state.location.station) {
+                HorizontalLineView(state.trains, settings, state.segmentSeconds, selected, state.location.station, myTrain) {
                     selected = it
                 }
             } else {
-                LineView(state.trains, settings, state.segmentSeconds, selected, state.location.station, nextTrains) {
+                LineView(state.trains, settings, state.segmentSeconds, selected, state.location.station, nextTrains,
+                    myTrainId = myTrain) {
                     selected = it
                 }
             }
@@ -201,6 +222,24 @@ private fun LineScreen(
         } else {
             vm.setTrainAlert(st, d)?.let { "Ti avviso ${settings.alertLeadMinutes} min prima del treno" }
                 ?: "Nessun treno abbastanza lontano da avvisare"
+        }
+    }
+
+    // Inizio viaggio: la notifica fissa del viaggio richiede il permesso per le notifiche (Android 13+)
+    var tripAfterPermission by remember { mutableStateOf<Pair<Direction, Int>?>(null) }
+    val askTripNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        tripAfterPermission?.let { (d, st) -> vm.startTrip(d, st) }
+        tripAfterPermission = null
+    }
+    if (startingTrip) {
+        StartTripSheet(state.location.station, onDismiss = { startingTrip = false }) { d, st ->
+            startingTrip = false
+            if (!TrainAlerts.canNotify(context) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                tripAfterPermission = d to st
+                askTripNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                vm.startTrip(d, st)
+            }
         }
     }
 
@@ -379,6 +418,42 @@ private fun DirectionRow(
                 }
             }
             result?.let { Text(it, color = p.mute, fontSize = 12.sp) }
+        }
+    }
+}
+
+/** Inizio del viaggio: direzione e stazione di salita (quella vicina, se nota). */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun StartTripSheet(nearby: Int?, onDismiss: () -> Unit, onStart: (Direction, Int) -> Unit) {
+    val p = LocalPalette.current
+    var station by remember { mutableIntStateOf(nearby ?: 11) }
+    var dir by remember { mutableStateOf<Direction?>(null) }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = p.surface) {
+        Column(Modifier.padding(horizontal = 22.dp).padding(bottom = 28.dp)) {
+            Text("🚇 Sono sul treno", color = p.ink, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                "L'app riconosce le stazioni che passi (anche a schermo spento) e le condivide con l'orario: così " +
+                    "tutti vedono quanto ci mettono davvero i treni. Condivide solo stazione e ora, mai la tua posizione.",
+                color = p.mute, fontSize = 14.sp, lineHeight = 19.sp, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+            )
+            Text("Sei salito a", color = p.mute, fontSize = 14.sp)
+            StationPicker(station) { station = it }
+            Text("Direzione", color = p.mute, fontSize = 14.sp, modifier = Modifier.padding(top = 12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Direction.entries.filterNot { isEndOfLine(station, it) }.forEach { d ->
+                    FilterChip(selected = dir == d, onClick = { dir = d }, label = { Text(directionLabel(d)) }, colors = chipColors())
+                }
+            }
+            val chosen = dir?.takeIf { !isEndOfLine(station, it) }
+            Button(
+                onClick = { chosen?.let { onStart(it, station) } },
+                enabled = chosen != null,
+                modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                shape = RoundedCornerShape(50),
+                colors = ButtonDefaults.buttonColors(containerColor = p.lineA, contentColor = Color.White),
+                contentPadding = PaddingValues(vertical = 14.dp),
+            ) { Text("Inizia il viaggio", fontSize = 16.sp) }
         }
     }
 }

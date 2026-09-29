@@ -28,6 +28,7 @@ class ReportApi(
             .put("id", r.id).put("time_ms", r.timeMs).put("station", r.station)
             .put("direction", r.direction.name).put("offset_s", r.offsetS)
             .put("source", r.source.name).put("device_id", deviceId)
+        r.tripId?.let { body.put("trip_id", it) }
         val request = request("reports")
             .header("Prefer", "resolution=ignore-duplicates,return=minimal")
             .post(body.toString().toRequestBody(JSON))
@@ -99,5 +100,28 @@ class ReportApi(
 
     private companion object {
         val JSON = "application/json".toMediaType()
+    }
+}
+
+/** Il server delle segnalazioni, o null se l'app è stata compilata senza indirizzo e chiave. */
+fun reportApiOrNull(): ReportApi? =
+    BuildConfig.SUPABASE_URL.takeIf { it.isNotBlank() && BuildConfig.SUPABASE_ANON_KEY.isNotBlank() }
+        ?.let { ReportApi(it.trim().trimEnd('/').removeSuffix("/rest/v1"), BuildConfig.SUPABASE_ANON_KEY) }
+
+/** Identificativo anonimo del telefono, usato dal server solo per limitare lo spam. */
+fun deviceId(context: android.content.Context): String {
+    val prefs = context.getSharedPreferences("metroa", 0)
+    return prefs.getString("device_id", null)
+        ?: java.util.UUID.randomUUID().toString().also { prefs.edit().putString("device_id", it).apply() }
+}
+
+/**
+ * Invia le segnalazioni in attesa, una alla volta. Quelle rifiutate dal server (doppie, fuori limiti)
+ * restano sul telefono ma non si ritentano; al primo errore di rete si smette e si riprova più tardi.
+ */
+fun uploadPending(db: ReportDb, api: ReportApi, deviceId: String) {
+    for (r in db.pending()) {
+        val res = api.upload(r, deviceId)
+        if (res.ok || res.permanent) db.markUploaded(r.id) else throw IOException("Invio non riuscito")
     }
 }

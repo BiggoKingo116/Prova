@@ -7,6 +7,9 @@
     <!-- Avviso "il treno sta arrivando" -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- "Sono sul treno": segue le stazioni passate anche a schermo spento -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <application
         android:label="Metro A"
         android:icon="@mipmap/ic_launcher"
@@ -36,5 +39,10 @@
         <receiver
             android:name=".TrainAlertReceiver"
             android:exported="false" />
+
+        <service
+            android:name=".TripService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
     </application>
 </manifest>

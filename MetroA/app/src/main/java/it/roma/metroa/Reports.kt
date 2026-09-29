@@ -9,9 +9,10 @@ import kotlin.math.abs
 
 /**
  * Come è nata la segnalazione: pulsante "arrivato ora" (scarto calcolato dall'app), scelta a mano,
- * oppure conferma / smentita con un tocco di quanto segnalato da altri (la smentita vale "in orario").
+ * conferma / smentita con un tocco di quanto segnalato da altri (la smentita vale "in orario"),
+ * oppure passaggio in stazione registrato durante un viaggio "sono sul treno".
  */
-enum class ReportSource { ARRIVAL, MANUAL, CONFIRM, DENY }
+enum class ReportSource { ARRIVAL, MANUAL, CONFIRM, DENY, TRIP }
 
 /**
  * Segnalazione di un utente: in [station], verso [direction], i treni erano [offsetS] secondi
@@ -24,6 +25,8 @@ data class Report(
     val direction: Direction,
     val offsetS: Int,
     val source: ReportSource,
+    /** Per i passaggi di un viaggio: lo stesso id per tutte le stazioni, così online si ricavano i tempi fra stazioni. */
+    val tripId: String? = null,
 ) {
     val hour: Int get() = Instant.ofEpochMilli(timeMs).atZone(ROME).hour
 }
@@ -114,16 +117,19 @@ fun classify(p: Passage, delayS: Int): Pair<Int, Arrival>? {
  * Copia locale di tutte le segnalazioni (proprie e scaricate dal server). Le proprie restano con
  * uploaded = 0 finché il server non le ha ricevute, così non si perdono senza rete.
  */
-class ReportDb(context: Context) : SQLiteOpenHelper(context, "reports.db", null, 1) {
+class ReportDb(context: Context) : SQLiteOpenHelper(context, "reports.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             "CREATE TABLE report (id TEXT PRIMARY KEY, time_ms INTEGER NOT NULL, station INTEGER NOT NULL, " +
-                "direction TEXT NOT NULL, offset_s INTEGER NOT NULL, source TEXT NOT NULL, uploaded INTEGER NOT NULL)"
+                "direction TEXT NOT NULL, offset_s INTEGER NOT NULL, source TEXT NOT NULL, uploaded INTEGER NOT NULL, " +
+                "trip_id TEXT)"
         )
         db.execSQL("CREATE INDEX report_time ON report(time_ms)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) db.execSQL("ALTER TABLE report ADD COLUMN trip_id TEXT")
+    }
 
     fun save(reports: List<Report>, uploaded: Boolean) {
         val db = writableDatabase
@@ -133,7 +139,7 @@ class ReportDb(context: Context) : SQLiteOpenHelper(context, "reports.db", null,
                 db.insertWithOnConflict("report", null, ContentValues().apply {
                     put("id", r.id); put("time_ms", r.timeMs); put("station", r.station)
                     put("direction", r.direction.name); put("offset_s", r.offsetS)
-                    put("source", r.source.name); put("uploaded", if (uploaded) 1 else 0)
+                    put("source", r.source.name); put("uploaded", if (uploaded) 1 else 0); put("trip_id", r.tripId)
                 }, if (uploaded) SQLiteDatabase.CONFLICT_REPLACE else SQLiteDatabase.CONFLICT_IGNORE)
             }
             db.setTransactionSuccessful()
@@ -173,12 +179,12 @@ class ReportDb(context: Context) : SQLiteOpenHelper(context, "reports.db", null,
 
     private fun query(where: String, vararg args: String): List<Report> =
         readableDatabase.rawQuery(
-            "SELECT id, time_ms, station, direction, offset_s, source FROM report WHERE $where ORDER BY time_ms",
+            "SELECT id, time_ms, station, direction, offset_s, source, trip_id FROM report WHERE $where ORDER BY time_ms",
             args,
         ).use { c ->
             buildList {
                 while (c.moveToNext()) add(Report(c.getString(0), c.getLong(1), c.getInt(2),
-                    Direction.valueOf(c.getString(3)), c.getInt(4), ReportSource.valueOf(c.getString(5))))
+                    Direction.valueOf(c.getString(3)), c.getInt(4), ReportSource.valueOf(c.getString(5)), c.getString(6)))
             }
         }
 }

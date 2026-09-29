@@ -1,6 +1,7 @@
 package it.roma.metroa
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -182,6 +183,19 @@ class ScheduleTest {
         // Alle 08:06 il treno delle 08:05 è passato, a meno che non sia in ritardo di 2 minuti
         assertTrue(s.nextArrivalTimes(2, Direction.TO_ANAGNINA, at("08:06:00"), 0).isEmpty())
         assertEquals(listOf(ms("08:07:00")), s.nextArrivalTimes(2, Direction.TO_ANAGNINA, at("08:06:00"), 120))
+    }
+
+    /** "Sono sul treno": si riconosce la corsa più vicina all'orario, con l'ora prevista a ogni stazione. */
+    @Test fun matchTripFindsTheScheduledTrain() {
+        val s = ZipFile(sampleZip()).use { GtfsParser.parse(it) }
+        val ms = { t: String -> at(t).toInstant().toEpochMilli() }
+        val m = s.matchTrip(1, Direction.TO_ANAGNINA, ms("08:02:40"))!!
+        assertEquals("t1", m.tripId)
+        assertEquals(ms("08:00:00"), m.scheduledMs[0])
+        assertEquals(ms("08:02:00"), m.scheduledMs[1])
+        assertEquals(ms("08:05:00"), m.scheduledMs[2])
+        assertNull(s.matchTrip(1, Direction.TO_ANAGNINA, ms("09:00:00")))
+        assertNull(s.matchTrip(1, Direction.TO_BATTISTINI, ms("08:02:00")))
     }
 
     @Test fun alertNeedsSeveralBigDelaysAndFewDenials() {

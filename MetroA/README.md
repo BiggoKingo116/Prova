@@ -38,6 +38,18 @@ Dall'icona ⚙ in alto, con un'anteprima dal vivo di un tratto di linea:
 - **Avviso "il treno sta arrivando"**: 🔔 nel pannello di una stazione imposta una notifica 1, 2, 3 o 5 minuti
   prima del prossimo treno (serve il permesso per le notifiche). Il momento è calcolato quando lo si imposta.
 
+## "Sono sul treno"
+Si sceglie la stazione di salita (quella vicina è già proposta) e la direzione. L'app riconosce la corsa
+programmata e, finché il viaggio è in corso, segue la posizione anche a schermo spento (servizio con
+notifica fissa): quando il telefono è entro ~120 m da una delle prossime 3 stazioni, la registra. Sottoterra
+il segnale può mancare: la notifica e il riquadro hanno "Siamo a …" per segnarla a mano. Al capolinea o con
+"Sono sceso" il viaggio si chiude e mostra quanto ci ha messo il treno, tratto per tratto, rispetto all'orario.
+
+Ogni stazione passata diventa una segnalazione online (tipo `TRIP`, con lo stesso `trip_id` per tutto il
+viaggio): corregge subito le stime di tutti. **La posizione non viene mai inviata**, solo stazione e ora.
+Nel database le viste `trip_segments` (ogni tratto di ogni viaggio) e `segment_times` (media per tratta negli
+ultimi 60 giorni) mostrano quanto ci mettono davvero i treni.
+
 ## Segnalazioni condivise
 Dalla sezione **Segnala** (o dal pannello di una stazione) si indica se i treni sono in anticipo o in ritardo:
 - "Treno arrivato adesso": l'app calcola lo scarto dal passaggio programmato più vicino;

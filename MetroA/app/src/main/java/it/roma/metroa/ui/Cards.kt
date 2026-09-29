@@ -201,3 +201,69 @@ fun TrainAlertCard(a: TrainAlert, onCancel: () -> Unit) {
         }
     }
 }
+
+/** "m:ss" per le durate del viaggio. */
+private fun duration(s: Int) = "${s / 60}:${"%02d".format(kotlin.math.abs(s) % 60)}"
+
+/**
+ * Viaggio "sono sul treno". In corso: prossima stazione, ritardo del treno e pulsanti per segnare la
+ * stazione a mano o scendere. Concluso: quanto ci ha messo, tratto per tratto, rispetto all'orario.
+ */
+@Composable
+fun TripCard(t: TripState, locationTracked: Boolean, onMark: () -> Unit, onFinish: () -> Unit, onDismiss: () -> Unit) {
+    val p = LocalPalette.current
+    val haptic = LocalHapticFeedback.current
+    InfoCard(color = if (t.active) p.lineSoft else p.surface) {
+        if (t.active) {
+            Text("🚇  Sul treno verso ${STATIONS[t.direction.terminus].name}", color = p.ink, fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold)
+            val next = t.nextStation
+            Text(
+                (next?.let { "Prossima: ${STATIONS[it].name}" } ?: "Capolinea") +
+                    (t.currentOffsetS?.let { " · treno ${describeOffset(it)}" } ?: ""),
+                color = p.ink, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp),
+            )
+            Text(
+                "${t.passages.size} stazioni registrate · " +
+                    if (locationTracked) "le riconosco dalla posizione, anche a schermo spento"
+                    else "senza posizione: segnale a mano quando il treno si ferma",
+                color = p.mute, fontSize = 12.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 2.dp),
+            )
+            Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (next != null) Button(
+                    onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onMark() },
+                    colors = ButtonDefaults.buttonColors(containerColor = p.lineA, contentColor = Color.White),
+                    shape = RoundedCornerShape(50),
+                ) { Text("Siamo a ${STATIONS[next].name}", maxLines = 1) }
+                OutlinedButton(onClick = onFinish, shape = RoundedCornerShape(50)) { Text("Sono sceso", color = p.ink) }
+            }
+        } else {
+            val sum = summarize(t)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("🚇  Viaggio concluso", color = p.ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f))
+                TextButton(onClick = onDismiss) { Text("Chiudi", color = p.lineA) }
+            }
+            if (sum == null) {
+                Text("Troppe poche stazioni registrate per calcolare i tempi.", color = p.mute, fontSize = 14.sp)
+            } else {
+                Text(
+                    "${STATIONS[sum.from].name} → ${STATIONS[sum.to].name}: ${duration(sum.actualS)} min" +
+                        (sum.scheduledS?.let { " (orario ${duration(it)})" } ?: ""),
+                    color = p.ink, fontSize = 15.sp, modifier = Modifier.padding(top = 2.dp),
+                )
+                sum.legs.forEach { leg ->
+                    Row(Modifier.padding(top = 3.dp)) {
+                        Text("${STATIONS[leg.from].name} → ${STATIONS[leg.to].name}", color = p.mute, fontSize = 13.sp,
+                            modifier = Modifier.weight(1f), maxLines = 1)
+                        val slower = leg.scheduledS != null && leg.actualS > leg.scheduledS + 20
+                        Text(duration(leg.actualS) + (leg.scheduledS?.let { " / ${duration(it)}" } ?: ""),
+                            color = if (slower) p.lineA else p.ink, fontSize = 13.sp)
+                    }
+                }
+                Text("Tempi reali / orario. Grazie: le stazioni registrate sono state condivise e migliorano le stime.",
+                    color = p.mute, fontSize = 12.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 6.dp))
+            }
+        }
+    }
+}
