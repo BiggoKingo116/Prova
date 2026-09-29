@@ -42,7 +42,7 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
     private val db = ReportDb(app)
     private val prefs = app.getSharedPreferences("metroa", 0)
     private val api = BuildConfig.SUPABASE_URL.takeIf { it.isNotBlank() && BuildConfig.SUPABASE_ANON_KEY.isNotBlank() }
-        ?.let { ReportApi(it.trimEnd('/'), BuildConfig.SUPABASE_ANON_KEY) }
+        ?.let { ReportApi(it.trim().trimEnd('/').removeSuffix("/rest/v1"), BuildConfig.SUPABASE_ANON_KEY) }
 
     /** Identificativo anonimo del telefono, usato dal server solo per limitare lo spam. */
     private val deviceId: String = prefs.getString("device_id", null)
