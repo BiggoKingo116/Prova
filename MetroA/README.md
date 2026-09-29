@@ -12,10 +12,13 @@ Da riga di comando (serve l'Android SDK, con `ANDROID_HOME` impostato o `sdk.dir
 `./gradlew assembleDebug` → l'APK finisce in `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Da dove arrivano i dati
-Feed GTFS-Realtime "Vehicle Positions" di Roma Servizi per la Mobilità (dati ATAC, licenza CC-BY 3.0),
-aggiornato ogni 15 secondi mentre l'app è aperta.
+Il feed GTFS-Realtime di Roma Mobilità non trasmette la metropolitana (né posizioni né arrivi previsti),
+quindi l'app usa l'**orario programmato**: al primo avvio scarica il GTFS statico di Roma Servizi per la Mobilità
+(dati ATAC, licenza CC-BY 3.0, ~48 MB), estrae solo le corse della Metro A (route_id `MEA`) e le salva
+sul telefono (poche centinaia di KB). L'orario viene riscaricato ogni 7 giorni, o prima se non copre più la data di oggi.
 
-## Se non vedi treni
-Il feed potrebbe usare un route_id diverso per la Metro A, oppure non trasmettere affatto le posizioni
-dei treni della metropolitana. In basso nell'app compare un pannello con i route_id dei mezzi vicini alla linea:
-se la metro è tra questi, metti quel valore in `METRO_A_ROUTE_IDS` dentro `FeedRepository.kt`.
+Posizioni dei treni e minuti di attesa sono calcolati dall'orario: ritardi, guasti e scioperi non si vedono.
+
+## Test
+`./gradlew testDebugUnitTest` prova il parser su un GTFS di esempio. Con
+`METROA_GTFS_ZIP=/percorso/rome_static_gtfs.zip` verifica anche il file reale.

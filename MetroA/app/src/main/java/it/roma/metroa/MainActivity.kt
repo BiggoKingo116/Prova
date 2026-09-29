@@ -18,7 +18,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        // Scarica i dati solo quando l'app è visibile: niente batteria sprecata in background
+        // Aggiorna le posizioni solo quando l'app è visibile: niente batteria sprecata in background
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) { vm.poll() }
         }

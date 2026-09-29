@@ -25,6 +25,9 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import it.roma.metroa.*
 import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 private val ROW_H = 46.dp
 
@@ -42,22 +45,27 @@ fun MetroScreen(vm: MetroViewModel) {
             .windowInsetsPadding(WindowInsets.systemBars)
             .padding(horizontal = 20.dp)
     ) {
-        Header(state, now)
+        Header(state, onRetry = vm::load)
         Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 32.dp)) {
             Row(Modifier.padding(top = 14.dp, bottom = 4.dp)) {
                 Text("↑", Modifier.width(28.dp), color = p.mute, fontSize = 12.sp)
                 Text("↓", Modifier.width(28.dp), color = p.mute, fontSize = 12.sp)
             }
             LineView(state.trains, selected) { selected = it }
-            Footer(state)
+            Footer()
         }
     }
 
-    selected?.let { StationSheet(it, state.trains) { selected = null } }
+    selected?.let { i ->
+        // Ricalcolati a ogni secondo, così i minuti scalano mentre il pannello è aperto
+        val toBattistini = remember(i, now / 1000, state.trains) { vm.arrivals(i, Direction.TO_BATTISTINI) }
+        val toAnagnina = remember(i, now / 1000, state.trains) { vm.arrivals(i, Direction.TO_ANAGNINA) }
+        StationSheet(i, toBattistini, toAnagnina) { selected = null }
+    }
 }
 
 @Composable
-private fun Header(state: UiState, now: Long) {
+private fun Header(state: UiState, onRetry: () -> Unit) {
     val p = LocalPalette.current
     Row(Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(40.dp).clip(CircleShape).background(p.lineA), contentAlignment = Alignment.Center) {
@@ -73,13 +81,29 @@ private fun Header(state: UiState, now: Long) {
             Text("treni in linea", color = p.mute, fontSize = 12.sp)
         }
     }
-    val status = when {
-        state.loading -> "Carico i dati…"
-        state.error != null -> "Dati non aggiornati: ${state.error}"
-        state.feedTimeMs != null -> "Posizioni di ${((now - state.feedTimeMs) / 1000).coerceAtLeast(0)} s fa"
-        else -> ""
+    val progress = state.progress
+    when {
+        progress != null -> {
+            val pct = progress.fraction?.let { " ${(it * 100).toInt()}%" } ?: "…"
+            Text("${progress.label}$pct", color = p.mute, fontSize = 13.sp)
+            if (progress.fraction != null) {
+                LinearProgressIndicator({ progress.fraction }, Modifier.fillMaxWidth().padding(top = 6.dp),
+                    color = p.lineA, trackColor = p.rule)
+            } else {
+                LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp), color = p.lineA, trackColor = p.rule)
+            }
+        }
+        state.error != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Orario non disponibile: ${state.error}", Modifier.weight(1f), color = p.lineA, fontSize = 13.sp)
+            TextButton(onClick = onRetry) { Text("Riprova", color = p.lineA) }
+        }
+        state.scheduleDownloadedAtMs != null -> {
+            val day = SimpleDateFormat("d/M", Locale.ITALY).format(Date(state.scheduleDownloadedAtMs))
+            Text("Posizioni stimate dall'orario ATAC (aggiornato il $day), non in tempo reale",
+                color = p.mute, fontSize = 13.sp)
+        }
+        else -> Text("Carico l'orario…", color = p.mute, fontSize = 13.sp)
     }
-    Text(status, color = if (state.error != null) p.lineA else p.mute, fontSize = 13.sp)
     HorizontalDivider(Modifier.padding(top = 10.dp), color = p.rule)
 }
 
@@ -126,9 +150,8 @@ private fun TrainMarker(t: Train) {
     val x: Dp = when (t.direction) {
         Direction.TO_BATTISTINI -> 1.dp
         Direction.TO_ANAGNINA -> 29.dp
-        null -> 15.dp
     }
-    val glyph = when (t.direction) { Direction.TO_BATTISTINI -> "▲"; Direction.TO_ANAGNINA -> "▼"; null -> "•" }
+    val glyph = when (t.direction) { Direction.TO_BATTISTINI -> "▲"; Direction.TO_ANAGNINA -> "▼" }
     Box(
         Modifier.offset(x = x, y = ROW_H * pos + ROW_H / 2 - 9.dp)
             .size(26.dp, 18.dp).clip(RoundedCornerShape(9.dp)).background(p.ink),
@@ -137,35 +160,27 @@ private fun TrainMarker(t: Train) {
 }
 
 @Composable
-private fun Footer(state: UiState) {
+private fun Footer() {
     val p = LocalPalette.current
     Text(
-        "Colonna sinistra: verso Battistini. Destra: verso Anagnina. Tocca una stazione per i prossimi arrivi. " +
-            "Posizioni dal feed GTFS-Realtime di Roma Mobilità (dati ATAC); i minuti di arrivo sono stimati dalla distanza.",
+        "Colonna sinistra: verso Battistini. Destra: verso Anagnina. Tocca una stazione per i prossimi passaggi. " +
+            "Il feed in tempo reale di Roma Mobilità non include la metropolitana: posizioni e arrivi sono " +
+            "calcolati dall'orario programmato (GTFS di Roma Mobilità, dati ATAC), che l'app riscarica ogni settimana. " +
+            "Ritardi e guasti non sono visibili.",
         color = p.mute, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(top = 24.dp)
     )
-    // Diagnostica: se non compaiono treni, mostra quali route_id passano vicino alla linea
-    if (!state.loading && state.error == null && state.trains.isEmpty()) {
-        val list = state.routesNearLine.entries.sortedByDescending { it.value }.take(8)
-            .joinToString { "${it.key} (${it.value})" }
-        Text(
-            "Nessun treno Metro A nel feed. Mezzi vicini alla linea per route_id: ${list.ifEmpty { "nessuno" }}. " +
-                "Se tra questi c'è la metro, aggiorna METRO_A_ROUTE_IDS in FeedRepository.kt.",
-            color = p.lineA, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(top = 12.dp)
-        )
-    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun StationSheet(index: Int, trains: List<Train>, onDismiss: () -> Unit) {
+private fun StationSheet(index: Int, toBattistini: List<Int>, toAnagnina: List<Int>, onDismiss: () -> Unit) {
     val p = LocalPalette.current
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = p.surface) {
         Column(Modifier.padding(horizontal = 22.dp).padding(bottom = 28.dp)) {
             Text(STATIONS[index].name, color = p.ink, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(10.dp))
-            DirectionRow("Verso Battistini", index == 0, etasFor(index, Direction.TO_BATTISTINI, trains))
-            DirectionRow("Verso Anagnina", index == LAST, etasFor(index, Direction.TO_ANAGNINA, trains))
+            DirectionRow("Verso Battistini", index == 0, toBattistini)
+            DirectionRow("Verso Anagnina", index == LAST, toAnagnina)
         }
     }
 }
@@ -178,7 +193,7 @@ private fun DirectionRow(label: String, terminus: Boolean, etas: List<Int>) {
         Text(label, color = p.mute, fontSize = 14.sp)
         when {
             terminus -> Text("Capolinea", color = p.mute, fontSize = 16.sp)
-            etas.isEmpty() -> Text("Nessun treno in arrivo al momento", color = p.mute, fontSize = 16.sp)
+            etas.isEmpty() -> Text("Nessun treno in programma", color = p.mute, fontSize = 16.sp)
             else -> Row(verticalAlignment = Alignment.Bottom) {
                 val first = etas.first()
                 Text(

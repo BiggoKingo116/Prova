@@ -1,92 +1,74 @@
 package it.roma.metroa
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
-import kotlin.math.abs
-
-data class Train(val id: String, val position: Float, val direction: Direction?)
+import kotlinx.coroutines.launch
+import java.time.ZonedDateTime
 
 data class UiState(
     val trains: List<Train> = emptyList(),
-    val feedTimeMs: Long? = null,
-    val loading: Boolean = true,
+    /** Scaricamento/elaborazione dell'orario in corso. */
+    val progress: Progress? = null,
     val error: String? = null,
-    /** route_id dei mezzi vicini alla linea: utile se METRO_A_ROUTE_IDS è sbagliato. */
-    val routesNearLine: Map<String, Int> = emptyMap(),
+    val scheduleDownloadedAtMs: Long? = null,
 )
 
-class MetroViewModel : ViewModel() {
-    private val repo = FeedRepository()
-    private val lastPos = mutableMapOf<String, Float>()
-    private val lastDir = mutableMapOf<String, Direction>()
+class MetroViewModel(app: Application) : AndroidViewModel(app) {
+    private val repo = ScheduleRepository(app.filesDir, app.cacheDir)
+    @Volatile private var schedule: Schedule? = null
+    private var loadJob: Job? = null
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
 
-    /** Aggiorna ogni 15 secondi finché l'app è in primo piano. */
+    init { load() }
+
+    /** Carica l'orario salvato e, se è vecchio o assente, riscarica il GTFS. */
+    fun load() {
+        if (loadJob?.isActive == true) return
+        loadJob = viewModelScope.launch {
+            _state.update { it.copy(error = null) }
+            val cached = schedule ?: repo.loadCached()
+            if (cached != null) use(cached)
+            if (!repo.needsRefresh(cached, ZonedDateTime.now(ROME).toLocalDate())) return@launch
+            try {
+                use(repo.download { p -> _state.update { it.copy(progress = p) } })
+            } catch (e: Exception) {
+                // Con un orario già salvato si continua a usare quello
+                _state.update {
+                    it.copy(error = if (cached == null) e.message ?: "Errore di rete" else null)
+                }
+            } finally {
+                _state.update { it.copy(progress = null) }
+            }
+        }
+    }
+
+    private fun use(s: Schedule) {
+        schedule = s
+        _state.update { it.copy(scheduleDownloadedAtMs = s.downloadedAtMs) }
+        refresh()
+    }
+
+    /** Ricalcola le posizioni ogni 5 secondi finché l'app è in primo piano. */
     suspend fun poll() {
         while (true) {
             refresh()
-            delay(15_000)
+            delay(5_000)
         }
     }
 
-    private suspend fun refresh() {
-        try {
-            val feed = repo.fetch()
-            val trains = mutableListOf<Train>()
-            val nearby = mutableMapOf<String, Int>()
-
-            for (entity in feed.entityList) {
-                if (!entity.hasVehicle()) continue
-                val v = entity.vehicle
-                if (!v.hasPosition()) continue
-                val routeId = v.trip.routeId
-                val proj = projectOnLine(v.position.latitude.toDouble(), v.position.longitude.toDouble())
-                if (proj.distanceM < 120) nearby[routeId] = (nearby[routeId] ?: 0) + 1
-                if (routeId !in METRO_A_ROUTE_IDS || proj.distanceM > 400) continue
-
-                val id = v.vehicle.id.ifEmpty { entity.id }
-                val prev = lastPos[id]
-                var dir = lastDir[id]
-                if (prev != null && abs(proj.index - prev) > 0.05f) {
-                    dir = if (proj.index > prev) Direction.TO_ANAGNINA else Direction.TO_BATTISTINI
-                }
-                if (dir == null && v.position.hasBearing()) {
-                    dir = directionFromBearing(proj.index, v.position.bearing)
-                }
-                if (dir == null && proj.index < 0.1f) dir = Direction.TO_ANAGNINA
-                if (dir == null && proj.index > LAST - 0.1f) dir = Direction.TO_BATTISTINI
-
-                lastPos[id] = proj.index
-                dir?.let { lastDir[id] = it }
-                trains += Train(id, proj.index, dir)
-            }
-
-            val active = trains.map { it.id }.toSet()
-            lastPos.keys.retainAll(active); lastDir.keys.retainAll(active)
-
-            _state.value = UiState(
-                trains = trains,
-                feedTimeMs = if (feed.header.hasTimestamp()) feed.header.timestamp * 1000 else System.currentTimeMillis(),
-                loading = false,
-                routesNearLine = nearby,
-            )
-        } catch (e: Exception) {
-            _state.update { it.copy(loading = false, error = e.message ?: "Errore di rete") }
-        }
+    private fun refresh() {
+        val s = schedule ?: return
+        _state.update { it.copy(trains = s.trainsAt(ZonedDateTime.now(ROME))) }
     }
+
+    fun arrivals(station: Int, dir: Direction): List<Int> =
+        schedule?.arrivals(station, dir, ZonedDateTime.now(ROME)) ?: emptyList()
 }
-
-/** Minuti stimati all'arrivo in una stazione, dalla posizione reale del treno. */
-fun etasFor(station: Int, dir: Direction, trains: List<Train>): List<Int> =
-    trains.filter { it.direction == dir }
-        .mapNotNull { t ->
-            val gap = if (dir == Direction.TO_ANAGNINA) station - t.position else t.position - station
-            if (gap >= -0.1f) Math.round(gap.coerceAtLeast(0f) * MIN_PER_SEGMENT) else null
-        }
-        .sorted()
-        .take(3)
