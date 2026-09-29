@@ -28,6 +28,15 @@ Dall'icona ⚙ in alto, con un'anteprima dal vivo di un tratto di linea:
   linea capovolta (Anagnina in alto); minuti al prossimo treno accanto a ogni stazione, per una o due direzioni.
 - **Treni**: forma (freccia, pallino, vagone), dimensione, movimento fluido o a scatti, treni fermi che pulsano.
 - **Generale**: tema chiaro/scuro/di sistema, schermo sempre acceso, uso della posizione.
+- **Linea orizzontale** col telefono girato (disattivabile).
+
+## Stazioni preferite, widget e avvisi
+- **Preferite**: ☆ nel pannello di una stazione; compaiono in cima con il prossimo treno per direzione e
+  si gestiscono (ordine, rimozione) dalle impostazioni.
+- **Widget** per la schermata home: prossimi arrivi della prima preferita (o Termini) come orari, perché
+  Android aggiorna i widget al massimo ogni 30 minuti; mentre l'app è aperta si aggiorna ogni minuto.
+- **Avviso "il treno sta arrivando"**: 🔔 nel pannello di una stazione imposta una notifica 1, 2, 3 o 5 minuti
+  prima del prossimo treno (serve il permesso per le notifiche). Il momento è calcolato quando lo si imposta.
 
 ## Segnalazioni condivise
 Dalla sezione **Segnala** (o dal pannello di una stazione) si indica se i treni sono in anticipo o in ritardo:

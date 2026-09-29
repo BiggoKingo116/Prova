@@ -10,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -19,6 +20,7 @@ import kotlinx.coroutines.delay
 
 /** Tratto di linea usato nell'anteprima: Barberini → Manzoni. */
 private val PREVIEW_RANGE = 9..13
+private val PREVIEW_HEIGHT = 170.dp
 
 @Composable
 fun SettingsScreen(vm: MetroViewModel, state: UiState, s: AppSettings, onBack: () -> Unit) {
@@ -31,14 +33,17 @@ fun SettingsScreen(vm: MetroViewModel, state: UiState, s: AppSettings, onBack: (
                 Text("← Linea", color = p.lineA)
             }
             Text("Impostazioni", color = p.ink, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
-            // L'anteprima resta ferma in alto mentre si scorrono le opzioni
+            // L'anteprima resta ferma in alto mentre si scorrono le opzioni, ma ad altezza fissa: con la
+            // linea molto allungata verrebbe altrimenti a occupare tutto lo schermo e la lista non scorrerebbe
             InfoCard(Modifier.padding(top = 8.dp)) {
                 Text("Anteprima", color = p.mute, fontSize = 12.sp, modifier = Modifier.padding(bottom = 4.dp))
-                Preview(s, state.segmentSeconds)
+                Box(Modifier.fillMaxWidth().height(PREVIEW_HEIGHT).clipToBounds()) {
+                    Box(Modifier.wrapContentHeight(Alignment.Top, unbounded = true)) { Preview(s, state.segmentSeconds) }
+                }
             }
         }
         Column(
-            Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 32.dp)
+            Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 32.dp)
         ) {
             Section("Linea")
             InfoCard {
@@ -68,6 +73,37 @@ fun SettingsScreen(vm: MetroViewModel, state: UiState, s: AppSettings, onBack: (
                 Choice("Minuti accanto alle stazioni", NextTrainLabels.entries, s.nextTrainLabels, { it.label }) { v ->
                     set { it.copy(nextTrainLabels = v) }
                 }
+                Toggle("Linea orizzontale col telefono girato", "Stazioni da sinistra a destra, nomi in diagonale",
+                    s.horizontalInLandscape) { v -> set { it.copy(horizontalInLandscape = v) } }
+            }
+
+            Section("Stazioni preferite")
+            InfoCard {
+                if (s.favorites.isEmpty()) {
+                    Text("Nessuna. Tocca una stazione sulla linea e poi ☆ Preferita: comparirà in cima con i " +
+                        "prossimi treni, e la prima anche nel widget della schermata home.",
+                        color = p.mute, fontSize = 14.sp, lineHeight = 19.sp)
+                }
+                s.favorites.forEachIndexed { n, st ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("★  ${STATIONS[st].name}", color = p.ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                        if (n == 0) Text("widget", color = p.mute, fontSize = 12.sp)
+                        // Portare in cima: diventa la stazione del widget
+                        if (n > 0) TextButton(onClick = { set { it.copy(favorites = listOf(st) + (it.favorites - st)) } }) {
+                            Text("In cima", color = p.lineA)
+                        }
+                        TextButton(onClick = { set { it.toggleFavorite(st) } }) { Text("Togli", color = p.mute) }
+                    }
+                }
+            }
+
+            Section("Avvisi")
+            InfoCard {
+                Choice("Avvisami prima dell'arrivo di", AppSettings.ALERT_LEADS, s.alertLeadMinutes, { "$it min" }) { v ->
+                    set { it.copy(alertLeadMinutes = v) }
+                }
+                Text("Nel pannello di una stazione tocca 🔔 Avvisami: arriva una notifica prima del prossimo treno.",
+                    color = p.mute, fontSize = 13.sp, lineHeight = 18.sp)
             }
 
             Section("Treni")
@@ -94,11 +130,15 @@ fun SettingsScreen(vm: MetroViewModel, state: UiState, s: AppSettings, onBack: (
             }
 
             OutlinedButton(
-                onClick = { set { AppSettings() } },
-                enabled = s != AppSettings(),
+                // Le stazioni preferite restano: sono una scelta, non un'impostazione di aspetto
+                onClick = { set { AppSettings(favorites = it.favorites) } },
+                enabled = s != AppSettings(favorites = s.favorites),
                 modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
                 shape = RoundedCornerShape(50),
-            ) { Text("Ripristina le impostazioni predefinite", color = if (s != AppSettings()) p.lineA else p.mute) }
+            ) {
+                Text("Ripristina le impostazioni predefinite",
+                    color = if (s != AppSettings(favorites = s.favorites)) p.lineA else p.mute)
+            }
         }
     }
 }

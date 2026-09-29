@@ -4,8 +4,12 @@
     <!-- Solo per proporre la stazione più vicina: la posizione non lascia il telefono -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Avviso "il treno sta arrivando" -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <application
         android:label="Metro A"
+        android:icon="@mipmap/ic_launcher"
         android:theme="@style/Theme.MetroA"
         android:supportsRtl="true">
         <activity
@@ -16,5 +20,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <receiver
+            android:name=".NextTrainsWidget"
+            android:exported="true"
+            android:label="Metro A – prossimi treni">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_next_trains" />
+        </receiver>
+
+        <receiver
+            android:name=".TrainAlertReceiver"
+            android:exported="false" />
     </application>
 </manifest>

@@ -2,6 +2,8 @@ package it.roma.metroa.ui
 
 import android.Manifest
 import android.content.Intent
+import android.content.res.Configuration
+import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -31,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
@@ -127,6 +130,15 @@ private fun LineScreen(
             onOpenSettings = { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) },
         )
 
+        val favoriteArrivals = remember(settings.favorites, now / 1000) {
+            settings.favorites.associateWith { st -> Direction.entries.associateWith { vm.arrivals(st, it).firstOrNull() } }
+        }
+        Appearing(visible = settings.favorites.isNotEmpty()) {
+            FavoritesCard(settings.favorites, arrivals = { st, d -> favoriteArrivals[st]?.get(d) }) { selected = it }
+        }
+        val alert = state.trainAlert
+        Appearing(visible = alert != null) { if (alert != null) TrainAlertCard(alert, onCancel = vm::cancelTrainAlert) }
+
         Direction.entries.forEach { d ->
             Appearing(visible = d in state.askConfirm) {
                 ConfirmCard(d, state.delays[d] ?: NO_DATA) { yes -> vm.answerLive(d, yes) }
@@ -159,11 +171,37 @@ private fun LineScreen(
                 Text("↑ $up  ↓ $down", Modifier.weight(1f), color = p.mute, fontSize = 12.sp)
                 Text("in rosso: fermi in stazione", color = p.mute, fontSize = 12.sp)
             }
-            LineView(state.trains, settings, state.segmentSeconds, selected, state.location.station, nextTrains) {
-                selected = it
+            // Telefono girato: linea in orizzontale (se non disattivato nelle impostazioni)
+            val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+            if (landscape && settings.horizontalInLandscape) {
+                HorizontalLineView(state.trains, settings, state.segmentSeconds, selected, state.location.station) {
+                    selected = it
+                }
+            } else {
+                LineView(state.trains, settings, state.segmentSeconds, selected, state.location.station, nextTrains) {
+                    selected = it
+                }
             }
         }
         Footer()
+    }
+
+    // Avviso "il treno sta arrivando": su Android 13+ serve prima il permesso per le notifiche
+    val context = LocalContext.current
+    var alertAfterPermission by remember { mutableStateOf<Pair<Int, Direction>?>(null) }
+    val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        alertAfterPermission?.let { (st, d) -> if (granted) vm.setTrainAlert(st, d) }
+        alertAfterPermission = null
+    }
+    val setAlert = { st: Int, d: Direction ->
+        if (!TrainAlerts.canNotify(context) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            alertAfterPermission = st to d
+            askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+            "Consenti le notifiche per ricevere l'avviso"
+        } else {
+            vm.setTrainAlert(st, d)?.let { "Ti avviso ${settings.alertLeadMinutes} min prima del treno" }
+                ?: "Nessun treno abbastanza lontano da avvisare"
+        }
     }
 
     selected?.let { i ->
@@ -172,7 +210,12 @@ private fun LineScreen(
         val toAnagnina = remember(i, now / 1000) { vm.arrivals(i, Direction.TO_ANAGNINA) }
         StationSheet(
             i, toBattistini, toAnagnina,
+            favorite = i in settings.favorites,
+            alert = state.trainAlert?.takeIf { it.station == i },
+            onToggleFavorite = { vm.updateSettings { it.toggleFavorite(i) } },
             onArrived = { dir -> vm.reportArrivedNow(i, dir) },
+            onAlert = { dir -> setAlert(i, dir) },
+            onCancelAlert = vm::cancelTrainAlert,
             onFeedback = { selected = null; onFeedback(i) },
         ) { selected = null }
     }
@@ -254,15 +297,31 @@ private fun Footer() {
 @Composable
 private fun StationSheet(
     index: Int, toBattistini: List<Arrival>, toAnagnina: List<Arrival>,
-    onArrived: (Direction) -> Int?, onFeedback: () -> Unit, onDismiss: () -> Unit,
+    favorite: Boolean, alert: TrainAlert?,
+    onToggleFavorite: () -> Unit, onArrived: (Direction) -> Int?, onAlert: (Direction) -> String,
+    onCancelAlert: () -> Unit, onFeedback: () -> Unit, onDismiss: () -> Unit,
 ) {
     val p = LocalPalette.current
+    val haptic = LocalHapticFeedback.current
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = p.surface) {
         Column(Modifier.padding(horizontal = 22.dp).padding(bottom = 28.dp)) {
-            Text(STATIONS[index].name, color = p.ink, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(10.dp))
-            DirectionRow(index, Direction.TO_BATTISTINI, toBattistini) { onArrived(Direction.TO_BATTISTINI) }
-            DirectionRow(index, Direction.TO_ANAGNINA, toAnagnina) { onArrived(Direction.TO_ANAGNINA) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(STATIONS[index].name, color = p.ink, fontSize = 24.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f))
+                TextButton(onClick = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onToggleFavorite() }) {
+                    AnimatedContent(favorite, label = "preferita") { fav ->
+                        Text(if (fav) "★ Preferita" else "☆ Preferita", color = if (fav) p.lineA else p.mute, fontSize = 15.sp)
+                    }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            for (dir in listOf(Direction.TO_BATTISTINI, Direction.TO_ANAGNINA)) {
+                DirectionRow(
+                    index, dir, if (dir == Direction.TO_BATTISTINI) toBattistini else toAnagnina,
+                    alert = alert?.takeIf { it.direction == dir },
+                    onArrived = { onArrived(dir) }, onAlert = { onAlert(dir) }, onCancelAlert = onCancelAlert,
+                )
+            }
             HorizontalDivider(color = p.rule)
             TextButton(onClick = onFeedback, contentPadding = PaddingValues(0.dp)) {
                 Text("Treni in anticipo o in ritardo? Segnala", color = p.lineA)
@@ -272,7 +331,10 @@ private fun StationSheet(
 }
 
 @Composable
-private fun DirectionRow(station: Int, dir: Direction, arrivals: List<Arrival>, onArrived: () -> Int?) {
+private fun DirectionRow(
+    station: Int, dir: Direction, arrivals: List<Arrival>, alert: TrainAlert?,
+    onArrived: () -> Int?, onAlert: () -> String, onCancelAlert: () -> Unit,
+) {
     // Al capolinea di partenza si segnala la partenza invece dell'arrivo
     val departure = isStartOfLine(station, dir)
     val p = LocalPalette.current
@@ -304,8 +366,19 @@ private fun DirectionRow(station: Int, dir: Direction, arrivals: List<Arrival>, 
                     },
                     contentPadding = PaddingValues(0.dp),
                 ) { Text(if (departure) "Treno partito adesso" else "Treno arrivato adesso", color = p.lineA) }
-                result?.let { Text("  $it", color = p.mute, fontSize = 12.sp) }
+                Spacer(Modifier.weight(1f))
+                if (alert != null) {
+                    TextButton(onClick = onCancelAlert, contentPadding = PaddingValues(0.dp)) {
+                        Text("🔔 Annulla avviso", color = p.lineA)
+                    }
+                } else {
+                    TextButton(
+                        onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); result = onAlert() },
+                        contentPadding = PaddingValues(0.dp),
+                    ) { Text("🔔 Avvisami", color = p.lineA) }
+                }
             }
+            result?.let { Text(it, color = p.mute, fontSize = 12.sp) }
         }
     }
 }

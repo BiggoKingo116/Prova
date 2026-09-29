@@ -25,11 +25,21 @@ data class AppSettings(
     val theme: ThemeMode = ThemeMode.SYSTEM,
     val keepScreenOn: Boolean = false,
     val useLocation: Boolean = true,
+    /** Stazioni preferite, nell'ordine in cui sono state aggiunte; la prima è quella del widget. */
+    val favorites: List<Int> = emptyList(),
+    /** Con il telefono girato la linea si dispone in orizzontale. */
+    val horizontalInLandscape: Boolean = true,
+    /** Quanti minuti prima dell'arrivo suona l'avviso "il treno sta arrivando". */
+    val alertLeadMinutes: Int = 2,
 ) {
     companion object {
         const val MIN_SPACING = 36
         const val MAX_SPACING = 96
+        val ALERT_LEADS = listOf(1, 2, 3, 5)
     }
+
+    fun toggleFavorite(station: Int) =
+        copy(favorites = if (station in favorites) favorites - station else favorites + station)
 }
 
 /** Legge e scrive [AppSettings] nelle SharedPreferences; un valore mancante o sconosciuto torna al predefinito. */
@@ -49,6 +59,11 @@ class SettingsStore(private val prefs: SharedPreferences) {
             theme = enumPref("theme", d.theme),
             keepScreenOn = prefs.getBoolean("keepScreenOn", d.keepScreenOn),
             useLocation = prefs.getBoolean("useLocation", d.useLocation),
+            favorites = prefs.getString("favorites", "").orEmpty().split(',')
+                .mapNotNull { it.toIntOrNull()?.takeIf { i -> i in STATIONS.indices } }.distinct(),
+            horizontalInLandscape = prefs.getBoolean("horizontalInLandscape", d.horizontalInLandscape),
+            alertLeadMinutes = prefs.getInt("alertLeadMinutes", d.alertLeadMinutes)
+                .takeIf { it in AppSettings.ALERT_LEADS } ?: d.alertLeadMinutes,
         )
     }
 
@@ -65,6 +80,9 @@ class SettingsStore(private val prefs: SharedPreferences) {
             .putString("theme", s.theme.name)
             .putBoolean("keepScreenOn", s.keepScreenOn)
             .putBoolean("useLocation", s.useLocation)
+            .putString("favorites", s.favorites.joinToString(","))
+            .putBoolean("horizontalInLandscape", s.horizontalInLandscape)
+            .putInt("alertLeadMinutes", s.alertLeadMinutes)
             .apply()
     }
 

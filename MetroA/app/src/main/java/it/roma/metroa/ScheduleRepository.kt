@@ -20,15 +20,13 @@ data class Progress(val label: String, val fraction: Float?)
 
 /** Scarica il GTFS, ne estrae la Metro A e tiene in [filesDir] solo quella (poche centinaia di KB). */
 class ScheduleRepository(private val filesDir: File, private val cacheDir: File) {
-    private val cache = File(filesDir, "metro_a_schedule.txt")
+    private val cache = scheduleFile(filesDir)
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    suspend fun loadCached(): Schedule? = withContext(Dispatchers.IO) {
-        runCatching { cache.reader().use { Schedule.read(it) } }.getOrNull()
-    }
+    suspend fun loadCached(): Schedule? = withContext(Dispatchers.IO) { readCachedSchedule(filesDir) }
 
     fun needsRefresh(schedule: Schedule?, today: LocalDate): Boolean =
         schedule == null || !schedule.covers(today) ||
@@ -76,3 +74,9 @@ class ScheduleRepository(private val filesDir: File, private val cacheDir: File)
         }
     }
 }
+
+private fun scheduleFile(filesDir: File) = File(filesDir, "metro_a_schedule.txt")
+
+/** L'orario salvato sul telefono, o null se manca; bloccante, per il widget e gli avvisi. */
+fun readCachedSchedule(filesDir: File): Schedule? =
+    runCatching { scheduleFile(filesDir).reader().use { Schedule.read(it) } }.getOrNull()

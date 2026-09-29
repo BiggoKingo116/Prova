@@ -34,6 +34,12 @@ class SettingsTest {
         assertEquals(60f, fixed[4] - fixed[3], 0f)
     }
 
+    @Test fun favoritesKeepOrderAndToggle() {
+        val s = AppSettings().toggleFavorite(11).toggleFavorite(3)
+        assertEquals(listOf(11, 3), s.favorites)
+        assertEquals(listOf(3), s.toggleFavorite(11).favorites)
+    }
+
     @Test fun trainsSitBetweenStationCenters() {
         val c = stationCenters(AppSettings(stationSpacing = 40), null)
         assertEquals(40f * 2.5f, yAt(c, 2.5f), 0.001f)

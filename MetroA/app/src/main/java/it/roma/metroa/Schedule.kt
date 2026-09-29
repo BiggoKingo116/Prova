@@ -113,6 +113,16 @@ class Schedule(
         else -> Passage(trip.arr[k] - t, DWELL_HALF_S, trip.dep[k] - trip.arr[k] + DWELL_HALF_S)
     }
 
+    /**
+     * Istanti (ms) dei prossimi [count] arrivi in [station] verso [dir] non ancora avvenuti,
+     * spostati di [delayS]; per il widget e l'avviso "il treno sta arrivando".
+     */
+    fun nextArrivalTimes(station: Int, dir: Direction, now: ZonedDateTime, delayS: Int, count: Int = 3): List<Long> {
+        val nowMs = now.toInstant().toEpochMilli()
+        return passages(station, dir, now).map { it.inS + delayS }.filter { it >= 0 }.sorted().take(count)
+            .map { nowMs + it * 1000L }
+    }
+
     /** Scarto (secondi, positivo = in ritardo) fra adesso e il passaggio programmato più vicino, entro 10 minuti. */
     fun offsetFromNearest(station: Int, dir: Direction, now: ZonedDateTime): Int? =
         passages(station, dir, now).minByOrNull { kotlin.math.abs(it.inS) }
@@ -261,7 +271,7 @@ object GtfsParser {
         val entry = zip.getEntry(name) ?: error("$name mancante nel GTFS")
         val counting = CountingStream(zip.getInputStream(entry))
         counting.bufferedReader().use { reader ->
-            val header = splitCsv(reader.readLine().removePrefix("﻿")).map { it.trim() }
+            val header = splitCsv(reader.readLine().removePrefix("\uFEFF")).map { it.trim() }
             val index = header.withIndex().associate { it.value to it.index }
             val col = { c: String -> index[c] ?: error("Colonna $c mancante in $name") }
             var n = 0

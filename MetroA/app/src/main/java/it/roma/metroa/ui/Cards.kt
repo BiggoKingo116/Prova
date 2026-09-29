@@ -162,3 +162,42 @@ fun ArrivalText(a: Arrival?, fontSize: Int, departure: Boolean = false, weight: 
         Text(text, color = if (a == null) p.mute else p.lineA, fontSize = fontSize.sp, fontWeight = weight)
     }
 }
+
+/** Stazioni preferite con il prossimo treno per direzione; tocco su una riga per il pannello completo. */
+@Composable
+fun FavoritesCard(favorites: List<Int>, arrivals: (Int, Direction) -> Arrival?, onOpenStation: (Int) -> Unit) {
+    val p = LocalPalette.current
+    InfoCard {
+        Text("★  Preferite", color = p.mute, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        favorites.forEach { st ->
+            Row(
+                Modifier.fillMaxWidth().padding(top = 6.dp).clickable { onOpenStation(st) },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(STATIONS[st].name, color = p.ink, fontSize = 16.sp, modifier = Modifier.weight(1f), maxLines = 1)
+                Direction.entries.filterNot { isEndOfLine(st, it) }.forEach { d ->
+                    Text(if (d == Direction.TO_ANAGNINA) "  ↓ " else "  ↑ ", color = p.mute, fontSize = 13.sp)
+                    ArrivalText(arrivals(st, d), fontSize = 15, departure = isStartOfLine(st, d))
+                }
+            }
+        }
+    }
+}
+
+/** Avviso "il treno sta arrivando" impostato, con l'orario e il pulsante per annullarlo. */
+@Composable
+fun TrainAlertCard(a: TrainAlert, onCancel: () -> Unit) {
+    val p = LocalPalette.current
+    val fmt = java.time.format.DateTimeFormatter.ofPattern("HH:mm")
+    val at = { ms: Long -> java.time.Instant.ofEpochMilli(ms).atZone(ROME).format(fmt) }
+    InfoCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("🔔  Avviso alle ${at(a.alarmAtMs)}", color = p.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Text("Treno delle ${at(a.trainAtMs)} a ${STATIONS[a.station].name} verso ${STATIONS[a.direction.terminus].name}",
+                    color = p.mute, fontSize = 13.sp)
+            }
+            TextButton(onClick = onCancel) { Text("Annulla", color = p.lineA) }
+        }
+    }
+}

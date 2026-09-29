@@ -41,6 +41,8 @@ data class UiState(
     val sync: SyncStatus = SyncStatus(configured = false),
     /** Durata media delle tratte, per la linea "a distanze reali"; null finché l'orario non è caricato. */
     val segmentSeconds: FloatArray? = null,
+    /** Avviso "il treno sta arrivando" impostato e non ancora passato. */
+    val trainAlert: TrainAlert? = null,
 )
 
 class MetroViewModel(app: Application) : AndroidViewModel(app) {
@@ -75,6 +77,7 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
         _settings.value = new
         settingsStore.save(new)
         if (new.useLocation != old.useLocation) startLocation()
+        if (new.favorites != old.favorites) updateWidget()
     }
 
     init {
@@ -119,7 +122,7 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
         try {
             var tick = 0
             while (true) {
-                if (tick++ % 60 == 0) sync()
+                if (tick++ % 60 == 0) { sync(); updateWidget() }
                 refresh()
                 delay(1_000)
             }
@@ -166,8 +169,12 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
         val ask = Direction.entries.filter { d ->
             delays.getValue(d).live && (answeredAt[d]?.let { nowMs - it > LIVE_WINDOW_MS } ?: true)
         }
+        val alert = TrainAlerts.current(getApplication())
         _state.update {
-            it.copy(trains = trains, delays = delays, recentReports = recent, alerts = model.alerts(nowMs), askConfirm = ask)
+            it.copy(
+                trains = trains, delays = delays, recentReports = recent, alerts = model.alerts(nowMs),
+                askConfirm = ask, trainAlert = alert,
+            )
         }
     }
 
@@ -175,6 +182,32 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
     fun nextAtEveryStation(dir: Direction): List<Arrival?> {
         val now = ZonedDateTime.now(ROME)
         return schedule?.nextAtEveryStation(dir, now, delayFor(dir, now).medianS) ?: List(STATIONS.size) { null }
+    }
+
+    private fun updateWidget() {
+        viewModelScope.launch(Dispatchers.IO) { runCatching { NextTrainsWidget.updateAll(getApplication()) } }
+    }
+
+    /**
+     * Imposta l'avviso per il primo treno verso [dir] in [station] che arriva fra più di
+     * [AppSettings.alertLeadMinutes] minuti; suona quei minuti prima. Null se non ci sono treni adatti.
+     */
+    fun setTrainAlert(station: Int, dir: Direction): TrainAlert? {
+        val s = schedule ?: return null
+        val now = ZonedDateTime.now(ROME)
+        val leadMs = _settings.value.alertLeadMinutes * 60_000L
+        val nowMs = now.toInstant().toEpochMilli()
+        val trainAt = s.nextArrivalTimes(station, dir, now, delayFor(dir, now).medianS, count = 10)
+            .firstOrNull { it - nowMs >= leadMs + 30_000 } ?: return null
+        val alert = TrainAlert(station, dir, trainAt, trainAt - leadMs)
+        TrainAlerts.set(getApplication(), alert)
+        _state.update { it.copy(trainAlert = alert) }
+        return alert
+    }
+
+    fun cancelTrainAlert() {
+        TrainAlerts.cancel(getApplication())
+        _state.update { it.copy(trainAlert = null) }
     }
 
     fun arrivals(station: Int, dir: Direction): List<Arrival> {

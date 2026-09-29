@@ -52,7 +52,7 @@ class ScheduleTest {
         ZipOutputStream(f.outputStream()).use { out ->
             for ((name, body) in files) {
                 out.putNextEntry(ZipEntry(name))
-                out.write(("﻿" + body.trimIndent() + "\n").toByteArray())
+                out.write(("\uFEFF" + body.trimIndent() + "\n").toByteArray())
                 out.closeEntry()
             }
         }
@@ -170,6 +170,18 @@ class ScheduleTest {
         // Tratte medie: 08:00→08:02 e 08:03→08:05 durano 2 minuti
         assertEquals(120f, s.segmentSeconds[0], 0.1f)
         assertEquals(120f, s.segmentSeconds[1], 0.1f)
+    }
+
+    /** Orari assoluti per widget e avvisi: solo treni non ancora arrivati, spostati del ritardo stimato. */
+    @Test fun nextArrivalTimesAreClockTimes() {
+        val s = ZipFile(sampleZip()).use { GtfsParser.parse(it) }
+        val now = at("08:00:00")
+        val ms = { t: String -> at(t).toInstant().toEpochMilli() }
+        assertEquals(listOf(ms("08:05:00")), s.nextArrivalTimes(2, Direction.TO_ANAGNINA, now, 0))
+        assertEquals(listOf(ms("08:06:00")), s.nextArrivalTimes(2, Direction.TO_ANAGNINA, now, 60))
+        // Alle 08:06 il treno delle 08:05 è passato, a meno che non sia in ritardo di 2 minuti
+        assertTrue(s.nextArrivalTimes(2, Direction.TO_ANAGNINA, at("08:06:00"), 0).isEmpty())
+        assertEquals(listOf(ms("08:07:00")), s.nextArrivalTimes(2, Direction.TO_ANAGNINA, at("08:06:00"), 120))
     }
 
     @Test fun alertNeedsSeveralBigDelaysAndFewDenials() {
