@@ -46,13 +46,11 @@ fun InfoCard(
     }
 }
 
-fun directionShort(d: Direction) = if (d == Direction.TO_ANAGNINA) "verso Anagnina" else "verso Battistini"
-
 @Composable
 fun AlertCard(a: Alert) {
     val p = LocalPalette.current
     InfoCard(color = p.lineSoft) {
-        Text("⚠  Possibili problemi ${directionShort(a.direction)}", color = p.ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        Text("⚠  Possibili problemi verso ${STATIONS[a.direction.terminus].name}", color = p.ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
         val where = a.stations.take(3).joinToString(", ") { STATIONS[it].name } + if (a.stations.size > 3) "…" else ""
         Text(
             "${a.count} segnalazioni di ritardi oltre 5 minuti negli ultimi 15 minuti " +
@@ -88,35 +86,59 @@ fun ConfirmCard(dir: Direction, d: DelayEstimate, onAnswer: (Boolean) -> Unit) {
     }
 }
 
-/** Stazione vicina con i prossimi treni nelle due direzioni; tocco per il pannello completo. */
+/**
+ * Riquadro della posizione: chiede il permesso, avvisa se la localizzazione è spenta, mostra la ricerca
+ * e poi la stazione (quella in cui si è, con i prossimi treni, o la più vicina con la distanza).
+ */
 @Composable
-fun NearbyCard(n: Nearby, arrivals: (Direction) -> List<Arrival>, onOpen: () -> Unit) {
+fun LocationCard(
+    where: Where, arrivals: (Direction) -> List<Arrival>,
+    onOpenStation: (Int) -> Unit, onAskPermission: () -> Unit, onOpenSettings: () -> Unit,
+) {
     val p = LocalPalette.current
-    InfoCard(onClick = onOpen) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("📍  Sei a ${STATIONS[n.station].name}", color = p.ink, fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            Text("${n.distanceM} m", color = p.mute, fontSize = 13.sp)
+    when (where) {
+        Where.NoPermission -> InfoCard(onClick = onAskPermission) {
+            Text("📍  Trova la stazione più vicina", color = p.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text("Scegli \"Posizione precisa\". Serve solo a questo e non lascia il telefono.",
+                color = p.mute, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
         }
-        Direction.entries.forEach { d ->
-            val terminus = (d == Direction.TO_BATTISTINI && n.station == 0) || (d == Direction.TO_ANAGNINA && n.station == LAST)
-            if (!terminus) Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(directionLabel(d), color = p.mute, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                ArrivalText(arrivals(d).firstOrNull(), fontSize = 16)
+        Where.Off -> InfoCard(onClick = onOpenSettings) {
+            Text("📍  Localizzazione disattivata", color = p.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text("Tocca per attivarla nelle impostazioni del telefono.", color = p.mute, fontSize = 13.sp,
+                modifier = Modifier.padding(top = 2.dp))
+        }
+        Where.Searching -> InfoCard {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(16.dp), color = p.lineA, strokeWidth = 2.dp)
+                Text("   Cerco la tua posizione…", color = p.mute, fontSize = 15.sp)
+            }
+        }
+        is Where.Found -> InfoCard(onClick = { onOpenStation(where.station) }) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (where.atStation) "📍  Sei a ${STATIONS[where.station].name}"
+                    else "📍  Stazione più vicina: ${STATIONS[where.station].name}",
+                    color = p.ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f),
+                )
+                Text(formatDistance(where.distanceM), color = p.mute, fontSize = 13.sp)
+            }
+            Direction.entries.forEach { d ->
+                if (!isEndOfLine(where.station, d)) Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(directionLabel(d), color = p.mute, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    ArrivalText(arrivals(d).firstOrNull(), fontSize = 16)
+                }
+            }
+            if (!where.precise) {
+                TextButton(onClick = onAskPermission, contentPadding = PaddingValues(0.dp)) {
+                    Text("Posizione approssimativa (±${formatDistance(where.accuracyM)}): consenti quella precisa",
+                        color = p.lineA, fontSize = 13.sp)
+                }
             }
         }
     }
 }
 
-@Composable
-fun LocationPromptCard(onAllow: () -> Unit) {
-    val p = LocalPalette.current
-    InfoCard(onClick = onAllow) {
-        Text("📍  Trova la stazione più vicina", color = p.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-        Text("La posizione serve solo a questo e non lascia il telefono.", color = p.mute, fontSize = 13.sp,
-            modifier = Modifier.padding(top = 2.dp))
-    }
-}
+fun formatDistance(m: Int) = if (m < 1000) "$m m" else "%.1f km".format(java.util.Locale.ITALY, m / 1000.0)
 
 fun arrivalLabel(a: Arrival?, departure: Boolean = false) = when (a) {
     null -> "—"

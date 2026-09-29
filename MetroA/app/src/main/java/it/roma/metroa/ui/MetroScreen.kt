@@ -1,6 +1,8 @@
 package it.roma.metroa.ui
 
 import android.Manifest
+import android.content.Intent
+import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -37,6 +39,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -57,7 +60,7 @@ fun MetroScreen(vm: MetroViewModel) {
     // null = linea; altrimenti sezione segnalazioni, con la stazione da cui ci si arriva (-1 = nessuna)
     var feedbackFrom by rememberSaveable { mutableStateOf<Int?>(null) }
     val askLocation = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        vm.updateLocation()
+        vm.startLocation()
     }
     val requestLocation = {
         askLocation.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
@@ -100,16 +103,17 @@ private fun LineScreen(vm: MetroViewModel, state: UiState, onFeedback: (Int?) ->
 
         state.alerts.forEach { a -> key("alert", a.direction) { Appearing { AlertCard(a) } } }
 
-        val nearby = state.nearby
-        val nearbyArrivals = remember(nearby?.station, now / 1000) {
-            nearby?.let { n -> Direction.entries.associateWith { vm.arrivals(n.station, it) } }
+        val context = LocalContext.current
+        val found = (state.location as? Where.Found)?.station
+        val nearbyArrivals = remember(found, now / 1000) {
+            found?.let { n -> Direction.entries.associateWith { vm.arrivals(n, it) } }
         }
-        Appearing(visible = nearby != null) {
-            if (nearby != null) {
-                NearbyCard(nearby, arrivals = { d -> nearbyArrivals?.get(d).orEmpty() }) { selected = nearby.station }
-            }
-        }
-        Appearing(visible = !state.locationAllowed) { LocationPromptCard(onRequestLocation) }
+        LocationCard(
+            state.location, arrivals = { d -> nearbyArrivals?.get(d).orEmpty() },
+            onOpenStation = { selected = it },
+            onAskPermission = onRequestLocation,
+            onOpenSettings = { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) },
+        )
 
         Direction.entries.forEach { d ->
             Appearing(visible = d in state.askConfirm) {
@@ -138,7 +142,7 @@ private fun LineScreen(vm: MetroViewModel, state: UiState, onFeedback: (Int?) ->
                 Text("↑ Battistini  ↓ Anagnina", Modifier.weight(1f), color = p.mute, fontSize = 12.sp)
                 Text("in rosso: fermi in stazione", color = p.mute, fontSize = 12.sp)
             }
-            LineView(state.trains, selected, state.nearby?.station) { selected = it }
+            LineView(state.trains, selected, state.location.station) { selected = it }
         }
         Footer()
     }
@@ -303,12 +307,8 @@ private fun StationSheet(
         Column(Modifier.padding(horizontal = 22.dp).padding(bottom = 28.dp)) {
             Text(STATIONS[index].name, color = p.ink, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(10.dp))
-            DirectionRow("Verso Battistini", terminus = index == 0, departure = index == LAST, toBattistini) {
-                onArrived(Direction.TO_BATTISTINI)
-            }
-            DirectionRow("Verso Anagnina", terminus = index == LAST, departure = index == 0, toAnagnina) {
-                onArrived(Direction.TO_ANAGNINA)
-            }
+            DirectionRow(index, Direction.TO_BATTISTINI, toBattistini) { onArrived(Direction.TO_BATTISTINI) }
+            DirectionRow(index, Direction.TO_ANAGNINA, toAnagnina) { onArrived(Direction.TO_ANAGNINA) }
             HorizontalDivider(color = p.rule)
             TextButton(onClick = onFeedback, contentPadding = PaddingValues(0.dp)) {
                 Text("Treni in anticipo o in ritardo? Segnala", color = p.lineA)
@@ -317,16 +317,17 @@ private fun StationSheet(
     }
 }
 
-/** [departure]: capolinea di partenza, dove si segnala la partenza invece dell'arrivo. */
 @Composable
-private fun DirectionRow(label: String, terminus: Boolean, departure: Boolean, arrivals: List<Arrival>, onArrived: () -> Int?) {
+private fun DirectionRow(station: Int, dir: Direction, arrivals: List<Arrival>, onArrived: () -> Int?) {
+    // Al capolinea di partenza si segnala la partenza invece dell'arrivo
+    val departure = isStartOfLine(station, dir)
     val p = LocalPalette.current
     val haptic = LocalHapticFeedback.current
     var result by remember { mutableStateOf<String?>(null) }
     HorizontalDivider(color = p.rule)
     Column(Modifier.padding(vertical = 10.dp).animateContentSize(spring(stiffness = 400f))) {
-        Text(label, color = p.mute, fontSize = 14.sp)
-        if (terminus) {
+        Text(directionLabel(dir), color = p.mute, fontSize = 14.sp)
+        if (isEndOfLine(station, dir)) {
             Text("Capolinea", color = p.mute, fontSize = 16.sp)
         } else {
             if (arrivals.isEmpty()) {

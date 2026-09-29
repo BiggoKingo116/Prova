@@ -34,11 +34,11 @@ fun FeedbackScreen(
     val p = LocalPalette.current
     val haptic = LocalHapticFeedback.current
     // Stazione di partenza: quella da cui si arriva, poi quella vicina, poi Termini
-    var station by rememberSaveable { mutableIntStateOf(initialStation ?: state.nearby?.station ?: 11) }
+    var station by rememberSaveable { mutableIntStateOf(initialStation ?: state.location.station ?: 11) }
     // Se la posizione arriva dopo, e l'utente non ha ancora scelto, si passa alla stazione vicina
     var picked by rememberSaveable { mutableStateOf(initialStation != null) }
-    LaunchedEffect(state.nearby?.station) {
-        val n = state.nearby?.station
+    LaunchedEffect(state.location.station) {
+        val n = state.location.station
         if (!picked && n != null) station = n
     }
     var dir by rememberSaveable { mutableStateOf(Direction.TO_ANAGNINA) }
@@ -79,15 +79,15 @@ fun FeedbackScreen(
 
         SectionTitle("Dove sei")
         StationPicker(station) { station = it; picked = true; message = null }
-        val nearby = state.nearby
+        val nearby = state.location.station
         when {
-            !state.locationAllowed -> TextButton(onClick = onRequestLocation, contentPadding = PaddingValues(0.dp)) {
+            state.location == Where.NoPermission -> TextButton(onClick = onRequestLocation, contentPadding = PaddingValues(0.dp)) {
                 Text("📍 Usa la mia posizione", color = p.lineA)
             }
-            nearby != null && nearby.station != station -> TextButton(
-                onClick = { station = nearby.station; picked = true; message = null },
+            nearby != null && nearby != station -> TextButton(
+                onClick = { station = nearby; picked = true; message = null },
                 contentPadding = PaddingValues(0.dp),
-            ) { Text("📍 Sei a ${STATIONS[nearby.station].name}? Usala", color = p.lineA) }
+            ) { Text("📍 Sei a ${STATIONS[nearby].name}? Usala", color = p.lineA) }
             nearby != null -> Text("📍 Stazione più vicina a te", color = p.mute, fontSize = 13.sp,
                 modifier = Modifier.padding(top = 6.dp))
         }
@@ -100,7 +100,7 @@ fun FeedbackScreen(
                 )
             }
         }
-        val terminus = (dir == Direction.TO_ANAGNINA && station == LAST) || (dir == Direction.TO_BATTISTINI && station == 0)
+        val terminus = isEndOfLine(station, dir)
         if (terminus) {
             Text("${STATIONS[station].name} è il capolinea in questa direzione: scegli l'altra.",
                 color = p.lineA, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
@@ -121,7 +121,7 @@ fun FeedbackScreen(
             shape = RoundedCornerShape(50),
             contentPadding = PaddingValues(vertical = 14.dp),
             colors = ButtonDefaults.buttonColors(containerColor = p.lineA, contentColor = Color.White),
-        ) { Text(if (station == 0 || station == LAST) "Treno partito adesso" else "Treno arrivato adesso") }
+        ) { Text(if (isStartOfLine(station, dir)) "Treno partito adesso" else "Treno arrivato adesso") }
 
         SectionTitle("Oppure dimmi com'è")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -167,7 +167,7 @@ fun FeedbackScreen(
             state.recentReports.take(20).forEach { r ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                     Text(fmt.format(Date(r.timeMs)), color = p.mute, fontSize = 14.sp, modifier = Modifier.width(52.dp))
-                    Text("${STATIONS[r.station].name} → ${if (r.direction == Direction.TO_ANAGNINA) "Anagnina" else "Battistini"}",
+                    Text("${STATIONS[r.station].name} → ${STATIONS[r.direction.terminus].name}",
                         color = p.ink, fontSize = 14.sp, modifier = Modifier.weight(1f))
                     val kind = when (r.source) { ReportSource.CONFIRM -> "✓ "; ReportSource.DENY -> "✗ "; else -> "" }
                     Text(kind + formatOffsetShort(r.offsetS), color = if (r.offsetS > 60) p.lineA else p.ink, fontSize = 14.sp)
@@ -247,7 +247,7 @@ private fun SyncLine(s: SyncStatus, onRetry: () -> Unit) {
     }
 }
 
-fun directionLabel(d: Direction) = if (d == Direction.TO_ANAGNINA) "Verso Anagnina" else "Verso Battistini"
+fun directionLabel(d: Direction) = "Verso ${STATIONS[d.terminus].name}"
 
 /** "in ritardo di 2 min", "in anticipo di 1 min", "in orario" (sotto i 30 secondi). */
 fun describeOffset(s: Int): String {

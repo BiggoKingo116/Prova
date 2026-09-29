@@ -40,11 +40,20 @@ val LAST = STATIONS.lastIndex
 
 enum class Direction { TO_BATTISTINI, TO_ANAGNINA }
 
+/** Capolinea verso cui va la direzione. */
+val Direction.terminus: Int get() = if (this == Direction.TO_ANAGNINA) LAST else 0
+
+/** In questa stazione e direzione i treni finiscono la corsa: non ci sono partenze. */
+fun isEndOfLine(station: Int, dir: Direction) = station == dir.terminus
+
+/** Capolinea da cui i treni di questa direzione partono. */
+fun isStartOfLine(station: Int, dir: Direction) = station == LAST - dir.terminus
+
+/** Distanza in metri fra il punto e la stazione [i] (approssimazione piana, precisa a pochi metri in città). */
+fun distanceToStation(lat: Double, lon: Double, i: Int): Double =
+    hypot((lon - STATIONS[i].lon) * cos(Math.toRadians(lat)) * 111_320.0, (lat - STATIONS[i].lat) * 110_540.0)
+
 /** Indice della stazione più vicina al punto, o null se è più lontana di [maxM] metri. */
-fun nearestStation(lat: Double, lon: Double, maxM: Double = 300.0): Int? {
-    val kx = cos(Math.toRadians(lat)) * 111_320.0
-    return STATIONS.indices
-        .map { it to hypot((lon - STATIONS[it].lon) * kx, (lat - STATIONS[it].lat) * 110_540.0) }
-        .minBy { it.second }
-        .takeIf { it.second <= maxM }?.first
-}
+fun nearestStation(lat: Double, lon: Double, maxM: Double = 300.0): Int? =
+    STATIONS.indices.minBy { distanceToStation(lat, lon, it) }
+        .takeIf { distanceToStation(lat, lon, it) <= maxM }

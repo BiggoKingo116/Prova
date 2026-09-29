@@ -33,8 +33,10 @@ sbagliata viene smentita in fretta.
 **Avviso guasti**: con almeno 3 segnalazioni di ritardi oltre 5 minuti nella stessa direzione negli ultimi
 15 minuti (e più di quelle che dicono il contrario) compare "Possibili problemi" in cima.
 
-**Stazione vicina**: con il permesso di localizzazione l'app mostra la stazione entro 500 m con i prossimi
-treni e la propone nella sezione Segnala. La posizione non viene mai inviata.
+**Stazione vicina**: con il permesso di localizzazione (meglio "precisa": quella approssimativa sbaglia di
+1–3 km) l'app segue la posizione finché è aperta, da GPS, rete e "fused", tenendo la più precisa. Entro 500 m
+mostra "Sei a …" con i prossimi treni, la segna sulla linea e la propone in Segnala; più lontano indica la
+stazione più vicina e la distanza. Avvisa se la localizzazione è spenta. La posizione non viene mai inviata.
 
 Le segnalazioni vanno in un database online condiviso (Supabase) e sono salvate anche sul telefono, che le
 invia appena c'è rete. Per la stima del ritardo di una direzione l'app usa, in ordine:

@@ -37,8 +37,7 @@ data class UiState(
     val alerts: List<Alert> = emptyList(),
     /** Direzioni per cui chiedere "è così?": c'è una stima dal vivo e l'utente non ha già risposto. */
     val askConfirm: List<Direction> = emptyList(),
-    val nearby: Nearby? = null,
-    val locationAllowed: Boolean = false,
+    val location: Where = Where.NoPermission,
     val sync: SyncStatus = SyncStatus(configured = false),
 )
 
@@ -65,9 +64,9 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<UiState> = _state
 
     init {
+        app.deleteDatabase("observations.db") // registro locale delle versioni precedenti, sostituito da reports.db
         load()
         viewModelScope.launch { reloadReports() }
-        updateLocation()
     }
 
     /** Carica l'orario salvato e, se è vecchio o assente, riscarica il GTFS. */
@@ -98,28 +97,45 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Finché l'app è in primo piano: posizioni ogni secondo (i treni scorrono in modo continuo),
-     * server e posizione del telefono ogni minuto.
+     * Finché l'app è in primo piano: posizioni dei treni ogni secondo (scorrono in modo continuo),
+     * server ogni minuto, posizione del telefono di continuo.
      */
     suspend fun poll() {
-        var tick = 0
-        while (true) {
-            if (tick % 60 == 0) { sync(); updateLocation() }
-            tick++
-            refresh()
-            delay(1_000)
+        startLocation()
+        try {
+            var tick = 0
+            while (true) {
+                if (tick++ % 60 == 0) sync()
+                refresh()
+                delay(1_000)
+            }
+        } finally {
+            locationJob?.cancel() // app in background: niente GPS
         }
     }
 
-    /** Aggiorna la stazione vicina, se l'utente ha dato il permesso di localizzazione. */
-    fun updateLocation() {
+    private var locationJob: Job? = null
+
+    /** (Ri)avvia la ricerca della stazione vicina: all'apertura dell'app e dopo la risposta sul permesso. */
+    fun startLocation() {
+        locationJob?.cancel()
+        locationJob = viewModelScope.launch { trackLocation() }
+    }
+
+    private suspend fun trackLocation() {
         val app = getApplication<Application>()
-        val allowed = hasLocationPermission(app)
-        _state.update { it.copy(locationAllowed = allowed) }
-        if (!allowed) return
-        viewModelScope.launch {
-            val loc = runCatching { currentLocation(app) }.getOrNull() ?: return@launch
-            _state.update { it.copy(nearby = nearbyStation(loc)) }
+        when {
+            !hasLocationPermission(app) -> return _state.update { it.copy(location = Where.NoPermission) }
+            !isLocationOn(app) -> return _state.update { it.copy(location = Where.Off) }
+        }
+        val precise = hasPreciseLocation(app)
+        _state.update { if (it.location is Where.Found) it else it.copy(location = Where.Searching) }
+        var best: android.location.Location? = null
+        locationUpdates(app).collect { loc ->
+            val acc = if (loc.hasAccuracy()) loc.accuracy else 100f
+            if (!isBetterFix(loc.time, acc, best?.time, best?.let { if (it.hasAccuracy()) it.accuracy else 100f })) return@collect
+            best = loc
+            _state.update { it.copy(location = whereFrom(loc.latitude, loc.longitude, acc, precise)) }
         }
     }
 
@@ -166,7 +182,7 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
     fun answerLive(dir: Direction, confirm: Boolean) {
         val now = System.currentTimeMillis()
         val estimate = model.forDirection(dir, now, ZonedDateTime.now(ROME).hour)
-        val station = _state.value.nearby?.station
+        val station = _state.value.location.station
             ?: model.recent(now).filter { it.direction == dir }.maxByOrNull { it.timeMs }?.station
             ?: return
         if (confirm) submit(station, dir, estimate.medianS, ReportSource.CONFIRM)
@@ -208,7 +224,7 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
             for (r in db.pending()) {
                 val res = api.upload(r, deviceId)
                 // Rifiutata dal server (doppia, fuori limiti): resta sul telefono ma non si ritenta
-                if (res.ok || res.permanent) db.markUploaded(listOf(r.id)) else throw IOException("Invio non riuscito")
+                if (res.ok || res.permanent) db.markUploaded(r.id) else throw IOException("Invio non riuscito")
             }
             val since = System.currentTimeMillis() - 60L * 24 * 3600 * 1000
             var seq = prefs.getLong("last_seq", 0)

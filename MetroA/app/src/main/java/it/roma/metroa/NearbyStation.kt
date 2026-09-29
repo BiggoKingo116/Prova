@@ -6,52 +6,101 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationManager
+import android.os.Build
 import androidx.core.content.ContextCompat
+import androidx.core.location.LocationListenerCompat
 import androidx.core.location.LocationManagerCompat
-import androidx.core.os.CancellationSignal
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.coroutines.resume
+import androidx.core.location.LocationRequestCompat
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 
-/** Stazione vicina: [distanceM] metri dalla posizione del telefono. */
-data class Nearby(val station: Int, val distanceM: Int)
+/** Entro questa distanza si è "in" stazione; la posizione resta sul telefono e non viene mai inviata. */
+private const val NEARBY_MAX_M = 500
 
-/** Oltre questa distanza non si è "in" una stazione; la posizione resta sul telefono e non viene mai inviata. */
-const val NEARBY_MAX_M = 500.0
+/** Dove si trova il telefono rispetto alla linea. */
+sealed interface Where {
+    /** Permesso di localizzazione non dato. */
+    data object NoPermission : Where
+    /** Localizzazione spenta nelle impostazioni del telefono. */
+    data object Off : Where
+    /** In attesa della prima posizione. */
+    data object Searching : Where
 
-fun hasLocationPermission(context: Context) = listOf(
-    Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION,
-).any { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
-
-/** Stazione più vicina entro [NEARBY_MAX_M], o null. */
-fun nearbyStation(loc: Location): Nearby? {
-    if (loc.hasAccuracy() && loc.accuracy > 1000) return null // posizione troppo vaga
-    val i = nearestStation(loc.latitude, loc.longitude, NEARBY_MAX_M) ?: return null
-    val d = FloatArray(1)
-    Location.distanceBetween(loc.latitude, loc.longitude, STATIONS[i].lat, STATIONS[i].lon, d)
-    return Nearby(i, d[0].toInt())
+    /** Stazione più vicina [station] a [distanceM] metri; [precise] false se l'utente ha concesso solo la posizione approssimativa. */
+    data class Found(val station: Int, val distanceM: Int, val accuracyM: Int, val precise: Boolean) : Where {
+        val atStation: Boolean get() = distanceM <= NEARBY_MAX_M
+    }
 }
 
-/** Posizione attuale: fresca se arriva entro 10 secondi, altrimenti l'ultima nota se ha meno di 5 minuti. */
-@SuppressLint("MissingPermission")
-suspend fun currentLocation(context: Context): Location? {
-    if (!hasLocationPermission(context)) return null
-    val lm = context.getSystemService(LocationManager::class.java) ?: return null
-    val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
-        .filter { runCatching { lm.isProviderEnabled(it) }.getOrDefault(false) }
-    val provider = providers.firstOrNull { it == LocationManager.NETWORK_PROVIDER } ?: providers.firstOrNull() ?: return null
+/** La stazione in cui ci si trova, se si è entro [NEARBY_MAX_M]. */
+val Where.station: Int? get() = (this as? Where.Found)?.takeIf { it.atStation }?.station
 
-    val fresh = withTimeoutOrNull(10_000) {
-        suspendCancellableCoroutine<Location?> { cont ->
-            val cancel = CancellationSignal()
-            cont.invokeOnCancellation { cancel.cancel() }
-            LocationManagerCompat.getCurrentLocation(lm, provider, cancel, ContextCompat.getMainExecutor(context)) {
-                if (cont.isActive) cont.resume(it)
-            }
+fun whereFrom(lat: Double, lon: Double, accuracyM: Float, precise: Boolean): Where.Found {
+    val i = nearestStation(lat, lon, maxM = Double.POSITIVE_INFINITY)!!
+    return Where.Found(i, distanceToStation(lat, lon, i).toInt(), accuracyM.toInt(), precise)
+}
+
+/**
+ * Se una nuova posizione è migliore di quella che si ha: più recente di oltre 30 secondi, oppure
+ * più precisa, oppure appena più recente e non molto meno precisa.
+ */
+fun isBetterFix(newTimeMs: Long, newAccM: Float, oldTimeMs: Long?, oldAccM: Float?): Boolean {
+    if (oldTimeMs == null || oldAccM == null) return true
+    val dt = newTimeMs - oldTimeMs
+    return when {
+        dt > 30_000 -> true
+        dt < -30_000 -> false
+        newAccM < oldAccM -> true
+        dt > 0 && newAccM <= oldAccM + 50 -> true
+        else -> false
+    }
+}
+
+fun hasLocationPermission(context: Context) = hasPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ||
+    hasPreciseLocation(context)
+
+fun hasPreciseLocation(context: Context) = hasPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
+
+private fun hasPermission(context: Context, p: String) =
+    ContextCompat.checkSelfPermission(context, p) == PackageManager.PERMISSION_GRANTED
+
+fun isLocationOn(context: Context): Boolean =
+    context.getSystemService(LocationManager::class.java)?.let { LocationManagerCompat.isLocationEnabled(it) } == true
+
+/**
+ * Posizioni del telefono finché qualcuno le raccoglie: prima le ultime note (se recenti), poi gli
+ * aggiornamenti da tutte le fonti attive (GPS, rete, "fused"), ogni 5 secondi o 10 metri.
+ */
+@SuppressLint("MissingPermission")
+fun locationUpdates(context: Context): Flow<Location> = callbackFlow {
+    val lm = context.getSystemService(LocationManager::class.java)
+    if (lm == null || !hasLocationPermission(context)) {
+        close()
+        return@callbackFlow
+    }
+    val candidates = buildList {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) add(LocationManager.FUSED_PROVIDER)
+        add(LocationManager.GPS_PROVIDER)
+        add(LocationManager.NETWORK_PROVIDER)
+    }
+    val providers = candidates.filter { runCatching { lm.isProviderEnabled(it) }.getOrDefault(false) }
+
+    // Le ultime posizioni note danno subito un risultato, anche prima del primo aggiornamento
+    providers.mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
+        .filter { System.currentTimeMillis() - it.time < 10 * 60_000 }
+        .sortedBy { it.time }
+        .forEach { trySend(it) }
+
+    val listener = LocationListenerCompat { trySend(it) }
+    val request = LocationRequestCompat.Builder(5_000)
+        .setMinUpdateDistanceMeters(10f)
+        .setQuality(LocationRequestCompat.QUALITY_HIGH_ACCURACY)
+        .build()
+    for (p in providers) {
+        runCatching {
+            LocationManagerCompat.requestLocationUpdates(lm, p, request, ContextCompat.getMainExecutor(context), listener)
         }
     }
-    if (fresh != null) return fresh
-    return providers.mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
-        .filter { System.currentTimeMillis() - it.time < 5 * 60_000 }
-        .maxByOrNull { it.time }
+    awaitClose { LocationManagerCompat.removeUpdates(lm, listener) }
 }

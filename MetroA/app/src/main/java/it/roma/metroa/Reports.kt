@@ -40,11 +40,11 @@ private const val MIN_LIVE = 2
 private const val MIN_HISTORY = 3
 
 /** Possibile guasto: in [direction] almeno [count] segnalazioni di ritardo forte negli ultimi 15 minuti. */
-data class Alert(val direction: Direction, val count: Int, val medianS: Int, val stations: List<Int>, val lastMs: Long)
+data class Alert(val direction: Direction, val count: Int, val medianS: Int, val stations: List<Int>)
 
-const val ALERT_WINDOW_MS = 15 * 60 * 1000L
+private const val ALERT_WINDOW_MS = 15 * 60 * 1000L
 /** Oltre 5 minuti di ritardo non è più normale variabilità. */
-const val ALERT_MIN_DELAY_S = 300
+private const val ALERT_MIN_DELAY_S = 300
 private const val ALERT_MIN_REPORTS = 3
 
 class DelayModel(val reports: List<Report>) {
@@ -74,7 +74,7 @@ class DelayModel(val reports: List<Report>) {
         val against = window.count { it.offsetS < 120 }
         if (late.size < ALERT_MIN_REPORTS || against >= late.size) return@mapNotNull null
         val sorted = late.map { it.offsetS }.sorted()
-        Alert(dir, late.size, sorted[sorted.size / 2], late.map { it.station }.distinct().sorted(), late.maxOf { it.timeMs })
+        Alert(dir, late.size, sorted[sorted.size / 2], late.map { it.station }.distinct().sorted())
     }
 
     private fun estimate(g: List<Report>, live: Boolean): DelayEstimate {
@@ -164,9 +164,8 @@ class ReportDb(context: Context) : SQLiteOpenHelper(context, "reports.db", null,
         return gone.size
     }
 
-    fun markUploaded(ids: List<String>) {
-        val db = writableDatabase
-        for (id in ids) db.update("report", ContentValues().apply { put("uploaded", 1) }, "id = ?", arrayOf(id))
+    fun markUploaded(id: String) {
+        writableDatabase.update("report", ContentValues().apply { put("uploaded", 1) }, "id = ?", arrayOf(id))
     }
 
     private fun query(where: String, vararg args: String): List<Report> =
