@@ -67,6 +67,31 @@ class ReportApi(
         }
     }
 
+    /** Tutti gli id presenti sul server con ora ≥ [sinceMs], a pagine, per riconoscere le cancellazioni. */
+    fun fetchIds(sinceMs: Long, pageSize: Int = 1000): Set<String> {
+        val ids = HashSet<String>()
+        var seq = 0L
+        while (true) {
+            val url = "$baseUrl/rest/v1/reports".toHttpUrl().newBuilder()
+                .addQueryParameter("select", "id,seq")
+                .addQueryParameter("seq", "gt.$seq")
+                .addQueryParameter("time_ms", "gte.$sinceMs")
+                .addQueryParameter("order", "seq.asc")
+                .addQueryParameter("limit", "$pageSize")
+                .build()
+            val arr = client.newCall(request("").url(url).get().build()).execute().use { resp ->
+                if (!resp.isSuccessful) throw IOException("Il server ha risposto ${resp.code}")
+                JSONArray(resp.body?.string() ?: "[]")
+            }
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                ids += o.getString("id")
+                seq = maxOf(seq, o.getLong("seq"))
+            }
+            if (arr.length() < pageSize) return ids
+        }
+    }
+
     private fun request(path: String) = Request.Builder()
         .url("$baseUrl/rest/v1/$path")
         .header("apikey", anonKey)

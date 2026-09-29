@@ -46,6 +46,23 @@ class ReportApiTest {
         assertFalse(api.upload(report, "device-1").permanent)
     }
 
+    @Test fun fetchIdsReadsAllPages() {
+        server.enqueue(MockResponse().setBody("""[{"id":"a","seq":1},{"id":"b","seq":4}]"""))
+        server.enqueue(MockResponse().setBody("""[{"id":"c","seq":9}]"""))
+        assertEquals(setOf("a", "b", "c"), api.fetchIds(sinceMs = 1_000, pageSize = 2))
+        assertEquals("gt.0", server.takeRequest().requestUrl!!.queryParameter("seq"))
+        val second = server.takeRequest().requestUrl!!
+        assertEquals("gt.4", second.queryParameter("seq"))
+        assertEquals("gte.1000", second.queryParameter("time_ms"))
+    }
+
+    @Test fun fetchIdsFailsInsteadOfReturningPartialList() {
+        // Una lista incompleta farebbe cancellare dal telefono segnalazioni ancora valide
+        server.enqueue(MockResponse().setBody("""[{"id":"a","seq":1},{"id":"b","seq":2}]"""))
+        server.enqueue(MockResponse().setResponseCode(500))
+        assertTrue(runCatching { api.fetchIds(sinceMs = 0, pageSize = 2) }.isFailure)
+    }
+
     @Test fun fetchParsesReportsAndSkipsInvalid() {
         server.enqueue(MockResponse().setBody("""[
             {"id":"a","seq":7,"time_ms":1790000000000,"station":3,"direction":"TO_BATTISTINI","offset_s":-60,"source":"MANUAL"},

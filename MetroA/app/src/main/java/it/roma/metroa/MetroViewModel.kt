@@ -34,6 +34,11 @@ data class UiState(
     val delays: Map<Direction, DelayEstimate> = emptyMap(),
     /** Segnalazioni degli ultimi 20 minuti, di tutti, dalla più recente. */
     val recentReports: List<Report> = emptyList(),
+    val alerts: List<Alert> = emptyList(),
+    /** Direzioni per cui chiedere "è così?": c'è una stima dal vivo e l'utente non ha già risposto. */
+    val askConfirm: List<Direction> = emptyList(),
+    val nearby: Nearby? = null,
+    val locationAllowed: Boolean = false,
     val sync: SyncStatus = SyncStatus(configured = false),
 )
 
@@ -53,12 +58,16 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
     private var loadJob: Job? = null
     private val syncLock = Mutex()
 
+    /** Quando l'utente ha segnalato o risposto per ultimo, per direzione: non richiedere conferma subito dopo. */
+    private val answeredAt = java.util.concurrent.ConcurrentHashMap<Direction, Long>()
+
     private val _state = MutableStateFlow(UiState(sync = SyncStatus(configured = api != null)))
     val state: StateFlow<UiState> = _state
 
     init {
         load()
         viewModelScope.launch { reloadReports() }
+        updateLocation()
     }
 
     /** Carica l'orario salvato e, se è vecchio o assente, riscarica il GTFS. */
@@ -88,13 +97,29 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
-    /** Finché l'app è in primo piano: posizioni ogni 3 secondi (le soste durano ~25 s), server ogni minuto. */
+    /**
+     * Finché l'app è in primo piano: posizioni ogni secondo (i treni scorrono in modo continuo),
+     * server e posizione del telefono ogni minuto.
+     */
     suspend fun poll() {
         var tick = 0
         while (true) {
-            if (tick++ % 20 == 0) sync()
+            if (tick % 60 == 0) { sync(); updateLocation() }
+            tick++
             refresh()
-            delay(3_000)
+            delay(1_000)
+        }
+    }
+
+    /** Aggiorna la stazione vicina, se l'utente ha dato il permesso di localizzazione. */
+    fun updateLocation() {
+        val app = getApplication<Application>()
+        val allowed = hasLocationPermission(app)
+        _state.update { it.copy(locationAllowed = allowed) }
+        if (!allowed) return
+        viewModelScope.launch {
+            val loc = runCatching { currentLocation(app) }.getOrNull() ?: return@launch
+            _state.update { it.copy(nearby = nearbyStation(loc)) }
         }
     }
 
@@ -107,7 +132,12 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
         val delays = Direction.entries.associateWith { delayFor(it, now) }
         val trains = schedule?.trainsAt(now) { delays.getValue(it).medianS } ?: emptyList()
         val recent = model.recent(nowMs).sortedByDescending { it.timeMs }
-        _state.update { it.copy(trains = trains, delays = delays, recentReports = recent) }
+        val ask = Direction.entries.filter { d ->
+            delays.getValue(d).live && (answeredAt[d]?.let { nowMs - it > LIVE_WINDOW_MS } ?: true)
+        }
+        _state.update {
+            it.copy(trains = trains, delays = delays, recentReports = recent, alerts = model.alerts(nowMs), askConfirm = ask)
+        }
     }
 
     fun arrivals(station: Int, dir: Direction): List<Arrival> {
@@ -129,6 +159,20 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
     /** Segnalazione a mano: [offsetS] positivo = treni in ritardo, negativo = in anticipo, 0 = in orario. */
     fun reportManual(station: Int, dir: Direction, offsetS: Int) = submit(station, dir, offsetS, ReportSource.MANUAL)
 
+    /**
+     * Conferma con un tocco (o smentita, che vale "in orario") della stima dal vivo di [dir].
+     * La stazione è quella vicina se nota, altrimenti quella della segnalazione più recente.
+     */
+    fun answerLive(dir: Direction, confirm: Boolean) {
+        val now = System.currentTimeMillis()
+        val estimate = model.forDirection(dir, now, ZonedDateTime.now(ROME).hour)
+        val station = _state.value.nearby?.station
+            ?: model.recent(now).filter { it.direction == dir }.maxByOrNull { it.timeMs }?.station
+            ?: return
+        if (confirm) submit(station, dir, estimate.medianS, ReportSource.CONFIRM)
+        else submit(station, dir, 0, ReportSource.DENY)
+    }
+
     private var lastSubmitted: Report? = null
 
     private fun submit(station: Int, dir: Direction, offsetS: Int, source: ReportSource) {
@@ -137,6 +181,7 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
         val prev = lastSubmitted
         if (prev != null && prev.station == station && prev.direction == dir && r.timeMs - prev.timeMs < 30_000) return
         lastSubmitted = r
+        answeredAt[dir] = r.timeMs
         model = DelayModel(model.reports + r)
         refresh()
         viewModelScope.launch {
@@ -174,6 +219,12 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
                 if (page.size < 1000) break
             }
             prefs.edit().putLong("last_seq", seq).apply()
+            // Ogni 10 minuti: togliere dal telefono le segnalazioni cancellate sul server
+            val now = System.currentTimeMillis()
+            if (now - prefs.getLong("last_reconcile", 0) > 10 * 60_000) {
+                db.deleteMissing(api.fetchIds(since), since)
+                prefs.edit().putLong("last_reconcile", now).apply()
+            }
             _state.update { it.copy(sync = it.sync.copy(lastSyncMs = System.currentTimeMillis(), error = null)) }
         } catch (e: Exception) {
             _state.update { it.copy(sync = it.sync.copy(error = e.message ?: "Server non raggiungibile")) }

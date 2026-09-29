@@ -14,6 +14,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -26,9 +28,19 @@ private enum class Timing(val label: String) { EARLY("In anticipo"), ON_TIME("In
 
 /** Sezione segnalazioni: dire se i treni sono in anticipo o in ritardo, e vedere cosa segnalano gli altri. */
 @Composable
-fun FeedbackScreen(vm: MetroViewModel, state: UiState, initialStation: Int?, onBack: () -> Unit) {
+fun FeedbackScreen(
+    vm: MetroViewModel, state: UiState, initialStation: Int?, onRequestLocation: () -> Unit, onBack: () -> Unit,
+) {
     val p = LocalPalette.current
-    var station by rememberSaveable { mutableIntStateOf(initialStation ?: 11) } // Termini
+    val haptic = LocalHapticFeedback.current
+    // Stazione di partenza: quella da cui si arriva, poi quella vicina, poi Termini
+    var station by rememberSaveable { mutableIntStateOf(initialStation ?: state.nearby?.station ?: 11) }
+    // Se la posizione arriva dopo, e l'utente non ha ancora scelto, si passa alla stazione vicina
+    var picked by rememberSaveable { mutableStateOf(initialStation != null) }
+    LaunchedEffect(state.nearby?.station) {
+        val n = state.nearby?.station
+        if (!picked && n != null) station = n
+    }
     var dir by rememberSaveable { mutableStateOf(Direction.TO_ANAGNINA) }
     var timing by rememberSaveable { mutableStateOf<Timing?>(null) }
     var minutes by rememberSaveable { mutableIntStateOf(2) }
@@ -52,10 +64,33 @@ fun FeedbackScreen(vm: MetroViewModel, state: UiState, initialStation: Int?, onB
         )
 
         SectionTitle("Situazione adesso")
-        Direction.entries.forEach { d -> DelayLine(d, state.delays[d] ?: NO_DATA) }
+        state.alerts.forEach { a -> key("alert", a.direction) { Appearing { AlertCard(a) } } }
+        InfoCard {
+            Direction.entries.forEach { d -> DelayLine(d, state.delays[d] ?: NO_DATA) }
+        }
+        Direction.entries.forEach { d ->
+            Appearing(visible = d in state.askConfirm) {
+                ConfirmCard(d, state.delays[d] ?: NO_DATA) { yes ->
+                    vm.answerLive(d, yes)
+                    message = if (yes) "Grazie per la conferma!" else "Grazie! Segnato: in orario."
+                }
+            }
+        }
 
         SectionTitle("Dove sei")
-        StationPicker(station) { station = it; message = null }
+        StationPicker(station) { station = it; picked = true; message = null }
+        val nearby = state.nearby
+        when {
+            !state.locationAllowed -> TextButton(onClick = onRequestLocation, contentPadding = PaddingValues(0.dp)) {
+                Text("📍 Usa la mia posizione", color = p.lineA)
+            }
+            nearby != null && nearby.station != station -> TextButton(
+                onClick = { station = nearby.station; picked = true; message = null },
+                contentPadding = PaddingValues(0.dp),
+            ) { Text("📍 Sei a ${STATIONS[nearby.station].name}? Usala", color = p.lineA) }
+            nearby != null -> Text("📍 Stazione più vicina a te", color = p.mute, fontSize = 13.sp,
+                modifier = Modifier.padding(top = 6.dp))
+        }
         Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Direction.entries.forEach { d ->
                 FilterChip(
@@ -76,12 +111,15 @@ fun FeedbackScreen(vm: MetroViewModel, state: UiState, initialStation: Int?, onB
             color = p.mute, fontSize = 13.sp, lineHeight = 18.sp)
         Button(
             onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 message = vm.reportArrivedNow(station, dir)
                     ?.let { "Grazie! Treno ${describeOffset(it)} rispetto all'orario." }
                     ?: "Nessun treno in orario in questi 10 minuti: usa la scelta qui sotto."
             },
             enabled = !terminus,
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            shape = RoundedCornerShape(50),
+            contentPadding = PaddingValues(vertical = 14.dp),
             colors = ButtonDefaults.buttonColors(containerColor = p.lineA, contentColor = Color.White),
         ) { Text(if (station == 0 || station == LAST) "Treno partito adesso" else "Treno arrivato adesso") }
 
@@ -103,6 +141,7 @@ fun FeedbackScreen(vm: MetroViewModel, state: UiState, initialStation: Int?, onB
         OutlinedButton(
             onClick = {
                 val t = timing ?: return@OutlinedButton
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 val offset = when (t) { Timing.EARLY -> -minutes * 60; Timing.ON_TIME -> 0; Timing.LATE -> minutes * 60 }
                 vm.reportManual(station, dir, offset)
                 message = "Grazie! Segnalato: ${describeOffset(offset)}."
@@ -110,9 +149,15 @@ fun FeedbackScreen(vm: MetroViewModel, state: UiState, initialStation: Int?, onB
             },
             enabled = timing != null && !terminus,
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            shape = RoundedCornerShape(50),
+            contentPadding = PaddingValues(vertical = 12.dp),
         ) { Text("Invia segnalazione", color = if (timing != null && !terminus) p.lineA else p.mute) }
 
-        message?.let { Text(it, color = p.ink, fontSize = 14.sp, modifier = Modifier.padding(top = 10.dp)) }
+        Appearing(visible = message != null) {
+            InfoCard(Modifier.padding(top = 6.dp), color = p.lineSoft) {
+                Text(message.orEmpty(), color = p.ink, fontSize = 14.sp)
+            }
+        }
 
         SectionTitle("Ultime segnalazioni (20 minuti)")
         if (state.recentReports.isEmpty()) {
@@ -124,7 +169,8 @@ fun FeedbackScreen(vm: MetroViewModel, state: UiState, initialStation: Int?, onB
                     Text(fmt.format(Date(r.timeMs)), color = p.mute, fontSize = 14.sp, modifier = Modifier.width(52.dp))
                     Text("${STATIONS[r.station].name} → ${if (r.direction == Direction.TO_ANAGNINA) "Anagnina" else "Battistini"}",
                         color = p.ink, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                    Text(formatOffsetShort(r.offsetS), color = if (r.offsetS > 60) p.lineA else p.ink, fontSize = 14.sp)
+                    val kind = when (r.source) { ReportSource.CONFIRM -> "✓ "; ReportSource.DENY -> "✗ "; else -> "" }
+                    Text(kind + formatOffsetShort(r.offsetS), color = if (r.offsetS > 60) p.lineA else p.ink, fontSize = 14.sp)
                 }
             }
         }

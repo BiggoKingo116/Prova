@@ -155,6 +155,26 @@ class ScheduleTest {
         assertEquals(NO_DATA, DelayModel(history.take(2)).forDirection(Direction.TO_ANAGNINA, nineMs, 9))
     }
 
+    @Test fun alertNeedsSeveralBigDelaysAndFewDenials() {
+        val now = ZonedDateTime.parse("2026-09-29T09:10:00+02:00[Europe/Rome]").toInstant().toEpochMilli()
+        fun rep(minAgo: Int, offset: Int, station: Int = 5, dir: Direction = Direction.TO_ANAGNINA, src: ReportSource = ReportSource.MANUAL) =
+            Report("r$minAgo-$offset-$station-$src", now - minAgo * 60_000L, station, dir, offset, src)
+        val late = listOf(rep(2, 420, 5), rep(6, 360, 8), rep(12, 600, 8))
+        val a = DelayModel(late).alerts(now).single()
+        assertEquals(Direction.TO_ANAGNINA, a.direction)
+        assertEquals(3, a.count)
+        assertEquals(420, a.medianS)
+        assertEquals(listOf(5, 8), a.stations)
+        // Solo 2 ritardi forti, o segnalazioni vecchie di 20 minuti: nessun avviso
+        assertTrue(DelayModel(late.take(2)).alerts(now).isEmpty())
+        assertTrue(DelayModel(late.map { it.copy(timeMs = it.timeMs - 20 * 60_000L) }).alerts(now).isEmpty())
+        // Tante smentite quanti ritardi: l'avviso sparisce
+        val denied = late + listOf(rep(1, 0, src = ReportSource.DENY), rep(3, 0, src = ReportSource.DENY), rep(4, 30))
+        assertTrue(DelayModel(denied).alerts(now).isEmpty())
+        // L'altra direzione non è coinvolta
+        assertTrue(DelayModel(late).alerts(now).none { it.direction == Direction.TO_BATTISTINI })
+    }
+
     @Test fun cacheRoundTrip() {
         val s = ZipFile(sampleZip()).use { GtfsParser.parse(it, downloadedAtMs = 42) }
         val out = StringWriter().also { s.write(it) }.toString()

@@ -1,5 +1,6 @@
 -- Database condiviso delle segnalazioni di MetroA.
--- Da eseguire una volta in Supabase: progetto → SQL Editor → incolla tutto → Run.
+-- Da eseguire in Supabase: progetto → SQL Editor → incolla tutto → Run.
+-- Si può rieseguire: aggiorna un database già creato senza perdere le segnalazioni.
 
 create table if not exists public.reports (
     id         uuid primary key,                          -- generato dall'app: reinviare non crea doppioni
@@ -8,10 +9,15 @@ create table if not exists public.reports (
     station    smallint not null check (station between 0 and 26),
     direction  text     not null check (direction in ('TO_BATTISTINI', 'TO_ANAGNINA')),
     offset_s   integer  not null check (offset_s between -900 and 900), -- + in ritardo, - in anticipo
-    source     text     not null check (source in ('ARRIVAL', 'MANUAL')),
+    source     text     not null,
     device_id  uuid     not null,                         -- anonimo, solo per limitare lo spam; non leggibile
     created_at timestamptz not null default now()
 );
+
+-- ARRIVAL: "treno arrivato adesso"; MANUAL: scelta a mano; CONFIRM/DENY: conferma o smentita con un tocco
+alter table public.reports drop constraint if exists reports_source_check;
+alter table public.reports add constraint reports_source_check
+    check (source in ('ARRIVAL', 'MANUAL', 'CONFIRM', 'DENY'));
 
 create index if not exists reports_time_ms on public.reports (time_ms);
 create index if not exists reports_device on public.reports (device_id, created_at);

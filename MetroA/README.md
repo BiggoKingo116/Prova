@@ -26,6 +26,16 @@ Dalla sezione **Segnala** (o dal pannello di una stazione) si indica se i treni 
 - "Treno arrivato adesso": l'app calcola lo scarto dal passaggio programmato più vicino;
 - oppure a mano: in anticipo / in orario / in ritardo di 1, 2, 3, 5 o 10 minuti.
 
+Quando per una direzione ci sono segnalazioni recenti, l'app chiede "È così anche per te?": **Confermo**
+aggiunge una segnalazione con lo stesso ritardo, **No, in orario** una "in orario". Così una segnalazione
+sbagliata viene smentita in fretta.
+
+**Avviso guasti**: con almeno 3 segnalazioni di ritardi oltre 5 minuti nella stessa direzione negli ultimi
+15 minuti (e più di quelle che dicono il contrario) compare "Possibili problemi" in cima.
+
+**Stazione vicina**: con il permesso di localizzazione l'app mostra la stazione entro 500 m con i prossimi
+treni e la propone nella sezione Segnala. La posizione non viene mai inviata.
+
 Le segnalazioni vanno in un database online condiviso (Supabase) e sono salvate anche sul telefono, che le
 invia appena c'è rete. Per la stima del ritardo di una direzione l'app usa, in ordine:
 1. le segnalazioni degli ultimi 20 minuti (almeno 2): la situazione di adesso;
@@ -34,7 +44,8 @@ invia appena c'è rete. Per la stima del ritardo di una direzione l'app usa, in 
 
 ### Configurare il server (una volta sola)
 1. Crea un progetto gratuito su https://supabase.com.
-2. SQL Editor → incolla il contenuto di `supabase/schema.sql` → Run. Crea la tabella `reports` con i controlli:
+2. SQL Editor → incolla il contenuto di `supabase/schema.sql` → Run (va rieseguito quando lo script cambia:
+   aggiorna il database senza perdere dati). Crea la tabella `reports` con i controlli:
    valori nei limiti, niente modifiche o cancellazioni, al massimo una segnalazione ogni 30 s per stazione e
    direzione e 30 all'ora per telefono.
 3. Project Settings → API: copia "Project URL" e la chiave "anon public" in `local.properties`:
@@ -43,6 +54,9 @@ invia appena c'è rete. Per la stima del ritardo di una direzione l'app usa, in 
    metroa.supabaseAnonKey=eyJ...
    ```
    (oppure le variabili d'ambiente `METROA_SUPABASE_URL` e `METROA_SUPABASE_ANON_KEY`), poi ricompila.
+
+Le segnalazioni cancellate dalla dashboard (Table Editor → reports) spariscono anche dai telefoni: ogni
+10 minuti l'app confronta la sua copia con il server.
 
 La chiave "anon" finisce nell'APK ed è pubblica per costruzione: cosa si può fare lo decidono i permessi del database.
 Senza configurazione l'app funziona lo stesso e tiene le segnalazioni solo sul telefono.

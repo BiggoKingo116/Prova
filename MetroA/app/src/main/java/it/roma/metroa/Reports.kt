@@ -7,8 +7,11 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.time.Instant
 import kotlin.math.abs
 
-/** Come è nata la segnalazione: pulsante "arrivato ora" (scarto calcolato dall'app) o scelta a mano. */
-enum class ReportSource { ARRIVAL, MANUAL }
+/**
+ * Come è nata la segnalazione: pulsante "arrivato ora" (scarto calcolato dall'app), scelta a mano,
+ * oppure conferma / smentita con un tocco di quanto segnalato da altri (la smentita vale "in orario").
+ */
+enum class ReportSource { ARRIVAL, MANUAL, CONFIRM, DENY }
 
 /**
  * Segnalazione di un utente: in [station], verso [direction], i treni erano [offsetS] secondi
@@ -36,6 +39,14 @@ private const val MIN_LIVE = 2
 /** Storico: almeno 3 segnalazioni nella stessa fascia oraria (±1 h), o nella direzione in generale. */
 private const val MIN_HISTORY = 3
 
+/** Possibile guasto: in [direction] almeno [count] segnalazioni di ritardo forte negli ultimi 15 minuti. */
+data class Alert(val direction: Direction, val count: Int, val medianS: Int, val stations: List<Int>, val lastMs: Long)
+
+const val ALERT_WINDOW_MS = 15 * 60 * 1000L
+/** Oltre 5 minuti di ritardo non è più normale variabilità. */
+const val ALERT_MIN_DELAY_S = 300
+private const val ALERT_MIN_REPORTS = 3
+
 class DelayModel(val reports: List<Report>) {
     /**
      * Ritardo della direzione adesso. Prima le segnalazioni recenti (un guasto o un rallentamento
@@ -51,7 +62,20 @@ class DelayModel(val reports: List<Report>) {
         return NO_DATA
     }
 
-    fun recent(nowMs: Long): List<Report> = reports.filter { nowMs - it.timeMs <= LIVE_WINDOW_MS }
+    fun recent(nowMs: Long): List<Report> = reports.filter { it.timeMs <= nowMs && nowMs - it.timeMs <= LIVE_WINDOW_MS }
+
+    /**
+     * Avviso guasti per direzione: almeno 3 segnalazioni con più di 5 minuti di ritardo negli ultimi
+     * 15 minuti, e più di quelle che dicono il contrario (in orario o smentite) nello stesso periodo.
+     */
+    fun alerts(nowMs: Long): List<Alert> = Direction.entries.mapNotNull { dir ->
+        val window = reports.filter { it.direction == dir && it.timeMs <= nowMs && nowMs - it.timeMs <= ALERT_WINDOW_MS }
+        val late = window.filter { it.offsetS >= ALERT_MIN_DELAY_S }
+        val against = window.count { it.offsetS < 120 }
+        if (late.size < ALERT_MIN_REPORTS || against >= late.size) return@mapNotNull null
+        val sorted = late.map { it.offsetS }.sorted()
+        Alert(dir, late.size, sorted[sorted.size / 2], late.map { it.station }.distinct().sorted(), late.maxOf { it.timeMs })
+    }
 
     private fun estimate(g: List<Report>, live: Boolean): DelayEstimate {
         val sorted = g.map { it.offsetS }.sorted()
@@ -120,6 +144,25 @@ class ReportDb(context: Context) : SQLiteOpenHelper(context, "reports.db", null,
     )
 
     fun pending(): List<Report> = query("uploaded = 0")
+
+    /**
+     * Cancella le segnalazioni già sul server (dal [sinceMs] in poi) che il server non ha più:
+     * così una cancellazione fatta dalla dashboard arriva anche sui telefoni. Quelle da inviare restano.
+     */
+    fun deleteMissing(serverIds: Set<String>, sinceMs: Long): Int {
+        val db = writableDatabase
+        val local = db.rawQuery("SELECT id FROM report WHERE uploaded = 1 AND time_ms >= ?", arrayOf(sinceMs.toString()))
+            .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
+        val gone = local.filter { it !in serverIds }
+        db.beginTransaction()
+        try {
+            for (id in gone) db.delete("report", "id = ?", arrayOf(id))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return gone.size
+    }
 
     fun markUploaded(ids: List<String>) {
         val db = writableDatabase
