@@ -155,6 +155,23 @@ class ScheduleTest {
         assertEquals(NO_DATA, DelayModel(history.take(2)).forDirection(Direction.TO_ANAGNINA, nineMs, 9))
     }
 
+    /** I minuti scritti accanto a ogni stazione coincidono col primo arrivo del pannello della stazione. */
+    @Test fun nextAtEveryStationMatchesBoard() {
+        val s = ZipFile(sampleZip()).use { GtfsParser.parse(it) }
+        for (time in listOf("07:59:30", "08:01:00", "08:02:30", "08:04:50")) {
+            for (delay in listOf(0, 60)) {
+                val all = s.nextAtEveryStation(Direction.TO_ANAGNINA, at(time), delay)
+                for (station in 0..2) {
+                    assertEquals("$time +$delay stazione $station",
+                        board(s.passages(station, Direction.TO_ANAGNINA, at(time)), delay).firstOrNull(), all[station])
+                }
+            }
+        }
+        // Tratte medie: 08:00→08:02 e 08:03→08:05 durano 2 minuti
+        assertEquals(120f, s.segmentSeconds[0], 0.1f)
+        assertEquals(120f, s.segmentSeconds[1], 0.1f)
+    }
+
     @Test fun alertNeedsSeveralBigDelaysAndFewDenials() {
         val now = ZonedDateTime.parse("2026-09-29T09:10:00+02:00[Europe/Rome]").toInstant().toEpochMilli()
         fun rep(minAgo: Int, offset: Int, station: Int = 5, dir: Direction = Direction.TO_ANAGNINA, src: ReportSource = ReportSource.MANUAL) =

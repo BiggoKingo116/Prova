@@ -78,14 +78,40 @@ class Schedule(
     fun passages(station: Int, dir: Direction, now: ZonedDateTime): List<Passage> =
         activeTrips(now).filter { it.first.direction == dir }.mapNotNull { (trip, t) ->
             val k = trip.stations.indexOf(station)
-            if (k < 0) return@mapNotNull null
-            val p = when (k) {
-                0 -> Passage(trip.dep[0] - t, TERMINUS_BEFORE_S, 0)
-                trip.stations.lastIndex -> Passage(trip.arr[k] - t, 0, TERMINUS_AFTER_S)
-                else -> Passage(trip.arr[k] - t, DWELL_HALF_S, trip.dep[k] - trip.arr[k] + DWELL_HALF_S)
-            }
-            p.takeIf { it.inS >= -LOOKBACK_S }
+            if (k < 0) null else passageAt(trip, k, t).takeIf { it.inS >= -LOOKBACK_S }
         }.sortedBy { it.inS }.toList()
+
+    /** Il prossimo passaggio in ogni stazione per [dir], con un solo giro sulle corse (per i minuti sulla linea). */
+    fun nextAtEveryStation(dir: Direction, now: ZonedDateTime, delayS: Int): List<Arrival?> {
+        val best = arrayOfNulls<Pair<Int, Arrival>>(STATIONS.size)
+        for ((trip, t) in activeTrips(now)) {
+            if (trip.direction != dir) continue
+            for (k in trip.stations.indices) {
+                val c = classify(passageAt(trip, k, t), delayS) ?: continue
+                val s = trip.stations[k]
+                if (best[s].let { it == null || c.first < it.first }) best[s] = c
+            }
+        }
+        return best.map { it?.second }
+    }
+
+    /** Durata media in secondi di ogni tratta (stazione i → i+1, nei due sensi), per disegnare la linea in proporzione. */
+    val segmentSeconds: FloatArray by lazy {
+        val sum = DoubleArray(LAST); val n = IntArray(LAST)
+        for (trip in trips) for (k in 0 until trip.stations.lastIndex) {
+            val a = trip.stations[k]; val b = trip.stations[k + 1]
+            if (kotlin.math.abs(a - b) != 1) continue
+            val seg = minOf(a, b)
+            sum[seg] += (trip.arr[k + 1] - trip.dep[k]).toDouble(); n[seg]++
+        }
+        FloatArray(LAST) { if (n[it] > 0) (sum[it] / n[it]).toFloat() else 90f }
+    }
+
+    private fun passageAt(trip: ScheduledTrip, k: Int, t: Int) = when (k) {
+        0 -> Passage(trip.dep[0] - t, TERMINUS_BEFORE_S, 0)
+        trip.stations.lastIndex -> Passage(trip.arr[k] - t, 0, TERMINUS_AFTER_S)
+        else -> Passage(trip.arr[k] - t, DWELL_HALF_S, trip.dep[k] - trip.arr[k] + DWELL_HALF_S)
+    }
 
     /** Scarto (secondi, positivo = in ritardo) fra adesso e il passaggio programmato più vicino, entro 10 minuti. */
     fun offsetFromNearest(station: Int, dir: Direction, now: ZonedDateTime): Int? =

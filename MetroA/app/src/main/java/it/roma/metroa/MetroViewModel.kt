@@ -39,6 +39,8 @@ data class UiState(
     val askConfirm: List<Direction> = emptyList(),
     val location: Where = Where.NoPermission,
     val sync: SyncStatus = SyncStatus(configured = false),
+    /** Durata media delle tratte, per la linea "a distanze reali"; null finché l'orario non è caricato. */
+    val segmentSeconds: FloatArray? = null,
 )
 
 class MetroViewModel(app: Application) : AndroidViewModel(app) {
@@ -62,6 +64,18 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _state = MutableStateFlow(UiState(sync = SyncStatus(configured = api != null)))
     val state: StateFlow<UiState> = _state
+
+    private val settingsStore = SettingsStore(app.getSharedPreferences("settings", 0))
+    private val _settings = MutableStateFlow(settingsStore.load())
+    val settings: StateFlow<AppSettings> = _settings
+
+    fun updateSettings(change: (AppSettings) -> AppSettings) {
+        val old = _settings.value
+        val new = change(old)
+        _settings.value = new
+        settingsStore.save(new)
+        if (new.useLocation != old.useLocation) startLocation()
+    }
 
     init {
         app.deleteDatabase("observations.db") // registro locale delle versioni precedenti, sostituito da reports.db
@@ -92,7 +106,7 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun use(s: Schedule) {
         schedule = s
-        _state.update { it.copy(scheduleDownloadedAtMs = s.downloadedAtMs) }
+        _state.update { it.copy(scheduleDownloadedAtMs = s.downloadedAtMs, segmentSeconds = s.segmentSeconds) }
         refresh()
     }
 
@@ -125,6 +139,7 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun trackLocation() {
         val app = getApplication<Application>()
         when {
+            !_settings.value.useLocation -> return _state.update { it.copy(location = Where.Disabled) }
             !hasLocationPermission(app) -> return _state.update { it.copy(location = Where.NoPermission) }
             !isLocationOn(app) -> return _state.update { it.copy(location = Where.Off) }
         }
@@ -154,6 +169,12 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
         _state.update {
             it.copy(trains = trains, delays = delays, recentReports = recent, alerts = model.alerts(nowMs), askConfirm = ask)
         }
+    }
+
+    /** Prossimo treno per [dir] in ogni stazione, per i minuti scritti accanto ai nomi sulla linea. */
+    fun nextAtEveryStation(dir: Direction): List<Arrival?> {
+        val now = ZonedDateTime.now(ROME)
+        return schedule?.nextAtEveryStation(dir, now, delayFor(dir, now).medianS) ?: List(STATIONS.size) { null }
     }
 
     fun arrivals(station: Int, dir: Direction): List<Arrival> {

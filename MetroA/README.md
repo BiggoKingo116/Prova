@@ -21,6 +21,14 @@ Posizioni dei treni e minuti di attesa sono calcolati dall'orario e corretti con
 I treni fermi in banchina sono in rosso; il pannello della stazione usa le stesse soglie ("In stazione",
 "In arrivo", "N min"), quindi linea e pannello dicono sempre la stessa cosa.
 
+## Impostazioni
+Dall'icona ⚙ in alto, con un'anteprima dal vivo di un tratto di linea:
+- **Linea**: distanza fra le stazioni (da compatta a larga); "distanze reali", con ogni tratta lunga in
+  proporzione al tempo medio di viaggio dall'orario (da ~50 s Repubblica–Termini a ~165 s Cinecittà–Anagnina);
+  linea capovolta (Anagnina in alto); minuti al prossimo treno accanto a ogni stazione, per una o due direzioni.
+- **Treni**: forma (freccia, pallino, vagone), dimensione, movimento fluido o a scatti, treni fermi che pulsano.
+- **Generale**: tema chiaro/scuro/di sistema, schermo sempre acceso, uso della posizione.
+
 ## Segnalazioni condivise
 Dalla sezione **Segnala** (o dal pannello di una stazione) si indica se i treni sono in anticipo o in ritardo:
 - "Treno arrivato adesso": l'app calcola lo scarto dal passaggio programmato più vicino;

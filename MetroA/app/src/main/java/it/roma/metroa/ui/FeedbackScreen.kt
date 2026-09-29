@@ -187,7 +187,7 @@ private fun SectionTitle(text: String) {
 }
 
 @Composable
-private fun chipColors() = FilterChipDefaults.filterChipColors(
+fun chipColors() = FilterChipDefaults.filterChipColors(
     selectedContainerColor = LocalPalette.current.lineA,
     selectedLabelColor = Color.White,
     labelColor = LocalPalette.current.ink,

@@ -97,15 +97,18 @@ sealed interface Arrival {
  * fermi in banchina, così il pannello e la linea dicono sempre la stessa cosa.
  */
 fun board(passages: List<Passage>, delayS: Int, count: Int = 3): List<Arrival> =
-    passages.mapNotNull { p ->
-        val est = p.inS + delayS
-        when {
-            est < -p.afterS -> null // già ripartito
-            est <= p.beforeS -> est to Arrival.AtStation
-            est < 60 -> est to Arrival.Arriving
-            else -> est to Arrival.InMinutes((est + 30) / 60)
-        }
-    }.sortedBy { it.first }.take(count).map { it.second }
+    passages.mapNotNull { classify(it, delayS) }.sortedBy { it.first }.take(count).map { it.second }
+
+/** Secondi stimati al passaggio e cosa mostrare, o null se il treno è già ripartito. */
+fun classify(p: Passage, delayS: Int): Pair<Int, Arrival>? {
+    val est = p.inS + delayS
+    return when {
+        est < -p.afterS -> null
+        est <= p.beforeS -> est to Arrival.AtStation
+        est < 60 -> est to Arrival.Arriving
+        else -> est to Arrival.InMinutes((est + 30) / 60)
+    }
+}
 
 /**
  * Copia locale di tutte le segnalazioni (proprie e scaricate dal server). Le proprie restano con

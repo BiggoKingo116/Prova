@@ -20,6 +20,8 @@ private const val NEARBY_MAX_M = 500
 
 /** Dove si trova il telefono rispetto alla linea. */
 sealed interface Where {
+    /** L'utente ha spento l'uso della posizione nelle impostazioni dell'app. */
+    data object Disabled : Where
     /** Permesso di localizzazione non dato. */
     data object NoPermission : Where
     /** Localizzazione spenta nelle impostazioni del telefono. */

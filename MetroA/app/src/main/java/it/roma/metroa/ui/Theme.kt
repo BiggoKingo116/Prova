@@ -7,6 +7,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import it.roma.metroa.ThemeMode
 
 data class Palette(
     val bg: Color, val ink: Color, val mute: Color, val rule: Color,
@@ -25,8 +26,12 @@ private val Dark = Palette(
 val LocalPalette = staticCompositionLocalOf { Light }
 
 @Composable
-fun MetroTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
+fun MetroTheme(mode: ThemeMode = ThemeMode.SYSTEM, content: @Composable () -> Unit) {
+    val dark = when (mode) {
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
     val p = if (dark) Dark else Light
     val scheme = if (dark)
         darkColorScheme(background = p.bg, surface = p.surface, primary = p.lineA, onBackground = p.ink, onSurface = p.ink)

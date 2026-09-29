@@ -8,7 +8,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.*
 import androidx.compose.animation.expandVertically
@@ -18,10 +17,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -33,16 +29,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -52,13 +43,24 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val ROW_H = 46.dp
+/** Le pagine dell'app: la linea, le segnalazioni (aperte da una stazione o no) e le impostazioni. */
+private sealed interface Page {
+    data object Line : Page
+    data class Feedback(val fromStation: Int?) : Page
+    data object Settings : Page
+}
+
+/** Per ricordare la pagina aperta anche dopo una rotazione dello schermo. */
+private val PageSaver = androidx.compose.runtime.saveable.Saver<Page, Int>(
+    save = { when (it) { Page.Line -> -3; Page.Settings -> -2; is Page.Feedback -> it.fromStation ?: -1 } },
+    restore = { when (it) { -3 -> Page.Line; -2 -> Page.Settings; -1 -> Page.Feedback(null); else -> Page.Feedback(it) } },
+)
 
 @Composable
 fun MetroScreen(vm: MetroViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
-    // null = linea; altrimenti sezione segnalazioni, con la stazione da cui ci si arriva (-1 = nessuna)
-    var feedbackFrom by rememberSaveable { mutableStateOf<Int?>(null) }
+    val settings by vm.settings.collectAsStateWithLifecycle()
+    var page by rememberSaveable(stateSaver = PageSaver) { mutableStateOf<Page>(Page.Line) }
     val askLocation = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         vm.startLocation()
     }
@@ -68,25 +70,35 @@ fun MetroScreen(vm: MetroViewModel) {
 
     // Le due schermate scorrono di lato come pagine
     AnimatedContent(
-        targetState = feedbackFrom,
+        targetState = page,
         transitionSpec = {
-            val forward = targetState != null
+            val forward = targetState != Page.Line
             (slideInHorizontally(tween(320)) { if (forward) it / 3 else -it / 3 } + fadeIn(tween(320))) togetherWith
                 (slideOutHorizontally(tween(320)) { if (forward) -it / 5 else it / 5 } + fadeOut(tween(200)))
         },
         label = "schermata",
-    ) { from ->
-        if (from != null) {
-            BackHandler { feedbackFrom = null }
-            FeedbackScreen(vm, state, from.takeIf { it >= 0 }, onRequestLocation = requestLocation) { feedbackFrom = null }
-        } else {
-            LineScreen(vm, state, onFeedback = { feedbackFrom = it ?: -1 }, onRequestLocation = requestLocation)
+    ) { current ->
+        if (current != Page.Line) BackHandler { page = Page.Line }
+        when (current) {
+            Page.Line -> LineScreen(
+                vm, state, settings,
+                onFeedback = { page = Page.Feedback(it) },
+                onSettings = { page = Page.Settings },
+                onRequestLocation = requestLocation,
+            )
+            is Page.Feedback -> FeedbackScreen(vm, state, current.fromStation, onRequestLocation = requestLocation) {
+                page = Page.Line
+            }
+            Page.Settings -> SettingsScreen(vm, state, settings) { page = Page.Line }
         }
     }
 }
 
 @Composable
-private fun LineScreen(vm: MetroViewModel, state: UiState, onFeedback: (Int?) -> Unit, onRequestLocation: () -> Unit) {
+private fun LineScreen(
+    vm: MetroViewModel, state: UiState, settings: AppSettings,
+    onFeedback: (Int?) -> Unit, onSettings: () -> Unit, onRequestLocation: () -> Unit,
+) {
     val p = LocalPalette.current
     var selected by remember { mutableStateOf<Int?>(null) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -99,7 +111,7 @@ private fun LineScreen(vm: MetroViewModel, state: UiState, onFeedback: (Int?) ->
             .padding(horizontal = 16.dp)
             .padding(bottom = 32.dp)
     ) {
-        Header(state, onRetry = vm::load)
+        Header(state, onRetry = vm::load, onSettings = onSettings)
 
         state.alerts.forEach { a -> key("alert", a.direction) { Appearing { AlertCard(a) } } }
 
@@ -137,12 +149,19 @@ private fun LineScreen(vm: MetroViewModel, state: UiState, onFeedback: (Int?) ->
             contentPadding = PaddingValues(vertical = 14.dp),
         ) { Text("Segnala anticipo o ritardo", fontSize = 16.sp) }
 
+        val nextTrains = remember(settings.nextTrainLabels, now / 1000) {
+            if (settings.nextTrainLabels == NextTrainLabels.NONE) emptyMap()
+            else Direction.entries.associateWith { vm.nextAtEveryStation(it) }
+        }
         InfoCard(Modifier.padding(top = 8.dp)) {
             Row(Modifier.padding(bottom = 6.dp)) {
-                Text("↑ Battistini  ↓ Anagnina", Modifier.weight(1f), color = p.mute, fontSize = 12.sp)
+                val (up, down) = if (settings.reversed) "Anagnina" to "Battistini" else "Battistini" to "Anagnina"
+                Text("↑ $up  ↓ $down", Modifier.weight(1f), color = p.mute, fontSize = 12.sp)
                 Text("in rosso: fermi in stazione", color = p.mute, fontSize = 12.sp)
             }
-            LineView(state.trains, selected, state.location.station) { selected = it }
+            LineView(state.trains, settings, state.segmentSeconds, selected, state.location.station, nextTrains) {
+                selected = it
+            }
         }
         Footer()
     }
@@ -171,7 +190,7 @@ fun Appearing(visible: Boolean = true, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun Header(state: UiState, onRetry: () -> Unit) {
+private fun Header(state: UiState, onRetry: () -> Unit, onSettings: () -> Unit) {
     val p = LocalPalette.current
     Row(Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(44.dp).clip(CircleShape).background(p.lineA), contentAlignment = Alignment.Center) {
@@ -190,6 +209,7 @@ private fun Header(state: UiState, onRetry: () -> Unit) {
             ) { n -> Text("$n", color = p.ink, fontSize = 30.sp, fontWeight = FontWeight.Light) }
             Text("treni in linea", color = p.mute, fontSize = 12.sp)
         }
+        IconButton(onClick = onSettings) { Text("⚙", fontSize = 22.sp, color = p.mute) }
     }
     val progress = state.progress
     Box(Modifier.animateContentSize(spring(stiffness = 400f)).padding(bottom = 6.dp)) {
@@ -216,72 +236,6 @@ private fun Header(state: UiState, onRetry: () -> Unit) {
             else -> Text("Carico l'orario…", color = p.mute, fontSize = 13.sp)
         }
     }
-}
-
-@Composable
-private fun LineView(trains: List<Train>, selected: Int?, nearby: Int?, onSelect: (Int) -> Unit) {
-    val p = LocalPalette.current
-    Box(Modifier.fillMaxWidth().height(ROW_H * STATIONS.size)) {
-        Canvas(Modifier.width(56.dp).fillMaxHeight()) {
-            val top = ROW_H.toPx() / 2; val bottom = size.height - ROW_H.toPx() / 2
-            for (x in listOf(14.dp, 42.dp)) {
-                drawLine(p.lineSoft, Offset(x.toPx(), top), Offset(x.toPx(), bottom), 4.dp.toPx(), StrokeCap.Round)
-            }
-        }
-        Column {
-            STATIONS.forEachIndexed { i, s ->
-                val terminus = i == 0 || i == LAST
-                val highlight = selected == i || nearby == i
-                val nameColor by animateColorAsState(if (highlight) p.lineA else p.ink, tween(250), label = "nome")
-                Row(
-                    Modifier.fillMaxWidth().height(ROW_H).clip(RoundedCornerShape(12.dp)).clickable { onSelect(i) },
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        Modifier.padding(start = 8.dp).size(40.dp, 12.dp).clip(RoundedCornerShape(6.dp))
-                            .background(if (terminus) p.lineA else p.surface)
-                            .border(2.dp, p.lineA, RoundedCornerShape(6.dp))
-                    )
-                    Spacer(Modifier.width(24.dp))
-                    Text(
-                        s.name, fontSize = 17.sp, color = nameColor,
-                        fontWeight = if (terminus || highlight) FontWeight.SemiBold else FontWeight.Normal
-                    )
-                    s.interchange?.let { Text("  $it", color = p.mute, fontSize = 12.sp) }
-                    if (nearby == i) Text("  · sei qui", color = p.lineA, fontSize = 12.sp)
-                }
-            }
-        }
-        trains.forEach { t -> key(t.id) { TrainMarker(t) } }
-    }
-}
-
-@Composable
-private fun TrainMarker(t: Train) {
-    val p = LocalPalette.current
-    // Le posizioni arrivano ogni secondo: un'interpolazione lineare di un secondo dà un movimento continuo
-    val pos by animateFloatAsState(t.position, tween(1000, easing = LinearEasing), label = "pos")
-    val color by animateColorAsState(if (t.stopped) p.lineA else p.ink, tween(400), label = "colore")
-    val glyphColor by animateColorAsState(if (t.stopped) Color.White else p.bg, tween(400), label = "freccia")
-    // Entrata: il treno compare crescendo invece che di colpo
-    val appear = remember { Animatable(0f) }
-    LaunchedEffect(Unit) { appear.animateTo(1f, spring(dampingRatio = 0.6f, stiffness = 300f)) }
-    // Fermo in banchina: leggero "respiro"
-    val breathe by rememberInfiniteTransition(label = "sosta").animateFloat(
-        1f, 1.12f, infiniteRepeatable(tween(700, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "respiro"
-    )
-    val x: Dp = when (t.direction) {
-        Direction.TO_BATTISTINI -> 1.dp
-        Direction.TO_ANAGNINA -> 29.dp
-    }
-    val glyph = when (t.direction) { Direction.TO_BATTISTINI -> "▲"; Direction.TO_ANAGNINA -> "▼" }
-    Box(
-        Modifier.offset(x = x, y = ROW_H * pos + ROW_H / 2 - 9.dp)
-            .graphicsLayer { alpha = appear.value; scaleX = appear.value; scaleY = appear.value }
-            .scale(if (t.stopped) breathe else 1f)
-            .size(26.dp, 18.dp).clip(RoundedCornerShape(9.dp)).background(color),
-        contentAlignment = Alignment.Center
-    ) { Text(glyph, color = glyphColor, fontSize = 9.sp) }
 }
 
 @Composable

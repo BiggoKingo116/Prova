@@ -97,6 +97,7 @@ fun LocationCard(
 ) {
     val p = LocalPalette.current
     when (where) {
+        Where.Disabled -> Unit // posizione spenta dalle impostazioni dell'app: nessun riquadro
         Where.NoPermission -> InfoCard(onClick = onAskPermission) {
             Text("📍  Trova la stazione più vicina", color = p.ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             Text("Scegli \"Posizione precisa\". Serve solo a questo e non lascia il telefono.",
