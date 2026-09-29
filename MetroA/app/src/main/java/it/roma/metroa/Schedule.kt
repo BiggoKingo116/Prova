@@ -27,6 +27,12 @@ private const val TERMINUS_AFTER_S = 30
 /** Quanto indietro guardare per gli arrivi: un treno in ritardo può passare dopo l'orario. */
 private const val LOOKBACK_S = 600
 
+/**
+ * Un passaggio programmato fra [inS] secondi. Il treno è fermo in banchina da [beforeS] secondi prima
+ * a [afterS] secondi dopo: le stesse finestre usate da [Schedule.trainsAt].
+ */
+data class Passage(val inS: Int, val beforeS: Int, val afterS: Int)
+
 /** Una corsa programmata: stazioni toccate (indici in STATIONS) con orari in secondi dall'inizio del giorno di servizio. */
 class ScheduledTrip(
     val id: String,
@@ -68,19 +74,23 @@ class Schedule(
             stoppedAt(last)
         }.toList()
 
-    /** Secondi mancanti ai passaggi programmati nella stazione (anche negativi fino a -[LOOKBACK_S]), in ordine. */
-    fun passages(station: Int, dir: Direction, now: ZonedDateTime): List<Int> =
+    /** Passaggi programmati nella stazione (anche già passati, fino a -[LOOKBACK_S]), in ordine. */
+    fun passages(station: Int, dir: Direction, now: ZonedDateTime): List<Passage> =
         activeTrips(now).filter { it.first.direction == dir }.mapNotNull { (trip, t) ->
             val k = trip.stations.indexOf(station)
             if (k < 0) return@mapNotNull null
-            val time = if (k == 0) trip.dep[0] else trip.arr[k]
-            (time - t).takeIf { it >= -LOOKBACK_S }
-        }.sorted().toList()
+            val p = when (k) {
+                0 -> Passage(trip.dep[0] - t, TERMINUS_BEFORE_S, 0)
+                trip.stations.lastIndex -> Passage(trip.arr[k] - t, 0, TERMINUS_AFTER_S)
+                else -> Passage(trip.arr[k] - t, DWELL_HALF_S, trip.dep[k] - trip.arr[k] + DWELL_HALF_S)
+            }
+            p.takeIf { it.inS >= -LOOKBACK_S }
+        }.sortedBy { it.inS }.toList()
 
     /** Scarto (secondi, positivo = in ritardo) fra adesso e il passaggio programmato più vicino, entro 10 minuti. */
     fun offsetFromNearest(station: Int, dir: Direction, now: ZonedDateTime): Int? =
-        passages(station, dir, now).minByOrNull { kotlin.math.abs(it) }
-            ?.takeIf { kotlin.math.abs(it) <= LOOKBACK_S }?.let { -it }
+        passages(station, dir, now).minByOrNull { kotlin.math.abs(it.inS) }
+            ?.takeIf { kotlin.math.abs(it.inS) <= LOOKBACK_S }?.let { -it.inS }
 
     /** Corse dei giorni di servizio di oggi e di ieri (quelle dopo mezzanotte hanno orari oltre le 24:00). */
     private fun activeTrips(now: ZonedDateTime): Sequence<Pair<ScheduledTrip, Int>> {

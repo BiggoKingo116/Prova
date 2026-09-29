@@ -1,8 +1,17 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+/** Server delle segnalazioni: da local.properties, gradle.properties o variabili d'ambiente. Vuoto = solo sul telefono. */
+val localProps = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
+fun config(name: String, env: String): String =
+    localProps.getProperty(name) ?: (findProperty(name) as String?) ?: System.getenv(env) ?: ""
 
 android {
     namespace = "it.roma.metroa"
@@ -14,6 +23,9 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+
+        buildConfigField("String", "SUPABASE_URL", "\"${config("metroa.supabaseUrl", "METROA_SUPABASE_URL")}\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"${config("metroa.supabaseAnonKey", "METROA_SUPABASE_ANON_KEY")}\"")
     }
     buildTypes {
         release { isMinifyEnabled = false }
@@ -23,7 +35,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 }
 
 dependencies {
@@ -39,4 +54,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     testImplementation("junit:junit:4.13.2")
+    // org.json vero al posto degli stub di android.jar, e un server HTTP finto per provare ReportApi
+    testImplementation("org.json:json:20240303")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

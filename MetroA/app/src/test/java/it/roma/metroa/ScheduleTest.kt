@@ -93,37 +93,66 @@ class ScheduleTest {
 
     @Test fun passagesAndOffsets() {
         val s = ZipFile(sampleZip()).use { GtfsParser.parse(it) }
-        assertEquals(listOf(300), s.passages(2, Direction.TO_ANAGNINA, at("08:00:00")))
-        assertEquals(listOf(-60), s.passages(2, Direction.TO_ANAGNINA, at("08:06:00")))
+        assertEquals(listOf(300), s.passages(2, Direction.TO_ANAGNINA, at("08:00:00")).map { it.inS })
+        assertEquals(listOf(-60), s.passages(2, Direction.TO_ANAGNINA, at("08:06:00")).map { it.inS })
         assertTrue(s.passages(2, Direction.TO_BATTISTINI, at("08:00:00")).isEmpty())
-        assertEquals(listOf(180), s.passages(LAST - 1, Direction.TO_BATTISTINI, at("23:59:00")))
+        assertEquals(listOf(180), s.passages(LAST - 1, Direction.TO_BATTISTINI, at("23:59:00")).map { it.inS })
         // Treno visto arrivare alle 08:06 dove l'orario diceva 08:05: un minuto di ritardo
         assertEquals(60, s.offsetFromNearest(2, Direction.TO_ANAGNINA, at("08:06:00")))
         assertEquals(-30, s.offsetFromNearest(2, Direction.TO_ANAGNINA, at("08:04:30")))
         assertEquals(null, s.offsetFromNearest(2, Direction.TO_ANAGNINA, at("09:00:00")))
     }
 
-    @Test fun etaIntervals() {
-        assertEquals(listOf(Eta(3, 5)), etas(listOf(240), NO_DATA))
-        assertEquals(listOf(Eta(0, 2)), etas(listOf(30), NO_DATA))
-        assertTrue(etas(listOf(-90), NO_DATA).isEmpty()) // già passato anche col margine
+    @Test fun boardShowsSingleMinutes() {
+        val mid = { s: Int -> Passage(s, 12, 12) }
+        assertEquals(listOf(Arrival.InMinutes(4)), board(listOf(mid(240)), 0))
+        assertEquals(listOf(Arrival.InMinutes(1)), board(listOf(mid(89)), 0))
+        assertEquals(listOf(Arrival.Arriving), board(listOf(mid(30)), 0))
+        assertEquals(listOf(Arrival.AtStation), board(listOf(mid(10)), 0))
+        assertEquals(listOf(Arrival.AtStation), board(listOf(mid(-12)), 0))
+        assertTrue(board(listOf(mid(-13)), 0).isEmpty()) // già ripartito
         // In ritardo di 90 s: un treno che per l'orario è passato 60 s fa deve ancora arrivare
-        assertEquals(listOf(Eta(0, 2)), etas(listOf(-60), DelayEstimate(90, 60, 5)))
-        assertEquals(listOf(Eta(1, 3), Eta(4, 6)), etas(listOf(300, 120, 900), NO_DATA, count = 2))
+        assertEquals(listOf(Arrival.Arriving), board(listOf(mid(-60)), 90))
+        assertEquals(
+            listOf(Arrival.InMinutes(2), Arrival.InMinutes(5)),
+            board(listOf(mid(300), mid(120), mid(900)), 0, count = 2),
+        )
     }
 
-    @Test fun delayModelPrefersSimilarObservations() {
-        val nine = ZonedDateTime.parse("2026-09-29T09:10:00+02:00[Europe/Rome]").toInstant().toEpochMilli()
-        val obs = listOf(60, 90, 120).map { Observation(nine, 5, Direction.TO_ANAGNINA, it) } +
-            listOf(-30, -30, -30).map { Observation(nine, 20, Direction.TO_ANAGNINA, it) }
-        val m = DelayModel(obs)
-        assertEquals(DelayEstimate(90, 60, 3), m.forStation(5, Direction.TO_ANAGNINA, 9))
-        assertEquals(DelayEstimate(-30, 60, 3), m.forStation(20, Direction.TO_ANAGNINA, 10))
-        // Stazione senza dati: si usa tutta la direzione nella stessa fascia oraria
-        assertEquals(6, m.forStation(12, Direction.TO_ANAGNINA, 9).count)
-        // Altra direzione, o meno di 3 passaggi: nessuna correzione
-        assertEquals(NO_DATA, m.forLine(Direction.TO_BATTISTINI, 9))
-        assertEquals(NO_DATA, DelayModel(obs.take(2)).forLine(Direction.TO_ANAGNINA, 9))
+    /** Il pannello dice "In stazione" esattamente quando sulla linea il treno è fermo lì: mai "in stazione" e poi "in arrivo". */
+    @Test fun boardAgreesWithLine() {
+        val s = ZipFile(sampleZip()).use { GtfsParser.parse(it) }
+        for (delay in listOf(0, 45, -30)) {
+            var t = at("07:57:00")
+            while (t.isBefore(at("08:08:00"))) {
+                val trains = s.trainsAt(t) { delay }
+                for (station in 0..2) {
+                    val onLine = trains.any { it.stopped && it.position.toInt() == station }
+                    val onBoard = board(s.passages(station, Direction.TO_ANAGNINA, t), delay).firstOrNull() == Arrival.AtStation
+                    assertEquals("stazione $station alle $t, ritardo $delay", onLine, onBoard)
+                }
+                t = t.plusSeconds(1)
+            }
+        }
+    }
+
+    @Test fun delayModelPrefersLiveReports() {
+        val nineMs = ZonedDateTime.parse("2026-09-29T09:10:00+02:00[Europe/Rome]").toInstant().toEpochMilli()
+        fun rep(minAgo: Int, offset: Int, dir: Direction = Direction.TO_ANAGNINA, daysAgo: Int = 0) =
+            Report("r$minAgo$offset$daysAgo", nineMs - minAgo * 60_000L - daysAgo * 86_400_000L, 5, dir, offset, ReportSource.MANUAL)
+        val history = listOf(60, 90, 120).map { rep(0, it, daysAgo = 3) }
+        val m = DelayModel(history)
+        // Nessuna segnalazione recente: lo storico della stessa fascia oraria
+        assertEquals(DelayEstimate(90, 3, live = false), m.forDirection(Direction.TO_ANAGNINA, nineMs, 9))
+        // Due segnalazioni negli ultimi 20 minuti prevalgono sullo storico
+        val live = DelayModel(history + rep(5, 300) + rep(10, 240))
+        assertEquals(DelayEstimate(300, 2, live = true), live.forDirection(Direction.TO_ANAGNINA, nineMs, 9))
+        // Una sola recente non basta; quelle di 25 minuti fa non sono più "adesso"
+        assertEquals(false, DelayModel(history + rep(5, 300)).forDirection(Direction.TO_ANAGNINA, nineMs, 9).live)
+        assertEquals(false, DelayModel(history + rep(25, 300) + rep(26, 300)).forDirection(Direction.TO_ANAGNINA, nineMs, 9).live)
+        // Altra direzione, o meno di 3 segnalazioni storiche: nessuna correzione
+        assertEquals(NO_DATA, m.forDirection(Direction.TO_BATTISTINI, nineMs, 9))
+        assertEquals(NO_DATA, DelayModel(history.take(2)).forDirection(Direction.TO_ANAGNINA, nineMs, 9))
     }
 
     @Test fun cacheRoundTrip() {

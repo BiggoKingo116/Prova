@@ -17,15 +17,36 @@ quindi l'app usa l'**orario programmato**: al primo avvio scarica il GTFS static
 (dati ATAC, licenza CC-BY 3.0, ~48 MB), estrae solo le corse della Metro A (route_id `MEA`) e le salva
 sul telefono (poche centinaia di KB). L'orario viene riscaricato ogni 7 giorni, o prima se non copre più la data di oggi.
 
-Posizioni dei treni e minuti di attesa sono calcolati dall'orario, quindi mostrati come intervallo (es. "3–5 min").
-I treni fermi in banchina sono in rosso (sosta stimata di ~25 s attorno all'orario).
+Posizioni dei treni e minuti di attesa sono calcolati dall'orario e corretti con le segnalazioni degli utenti.
+I treni fermi in banchina sono in rosso; il pannello della stazione usa le stesse soglie ("In stazione",
+"In arrivo", "N min"), quindi linea e pannello dicono sempre la stessa cosa.
 
-## Correzione con i passaggi reali
-Nel pannello di una stazione, "Treno arrivato ora" salva in un database SQLite sul telefono lo scarto fra
-il passaggio reale e quello programmato più vicino. Con almeno 3 passaggi l'app sposta stime e posizioni
-del ritardo mediano, scegliendo i dati più simili: stessa stazione, direzione e fascia oraria (±1 h),
-poi solo direzione e fascia oraria, poi solo direzione. Si usano gli ultimi 60 giorni; "Azzera" li cancella.
+## Segnalazioni condivise
+Dalla sezione **Segnala** (o dal pannello di una stazione) si indica se i treni sono in anticipo o in ritardo:
+- "Treno arrivato adesso": l'app calcola lo scarto dal passaggio programmato più vicino;
+- oppure a mano: in anticipo / in orario / in ritardo di 1, 2, 3, 5 o 10 minuti.
+
+Le segnalazioni vanno in un database online condiviso (Supabase) e sono salvate anche sul telefono, che le
+invia appena c'è rete. Per la stima del ritardo di una direzione l'app usa, in ordine:
+1. le segnalazioni degli ultimi 20 minuti (almeno 2): la situazione di adesso;
+2. lo storico degli ultimi 60 giorni nella stessa fascia oraria (±1 h, almeno 3);
+3. tutto lo storico della direzione (almeno 3).
+
+### Configurare il server (una volta sola)
+1. Crea un progetto gratuito su https://supabase.com.
+2. SQL Editor → incolla il contenuto di `supabase/schema.sql` → Run. Crea la tabella `reports` con i controlli:
+   valori nei limiti, niente modifiche o cancellazioni, al massimo una segnalazione ogni 30 s per stazione e
+   direzione e 30 all'ora per telefono.
+3. Project Settings → API: copia "Project URL" e la chiave "anon public" in `local.properties`:
+   ```
+   metroa.supabaseUrl=https://xxxx.supabase.co
+   metroa.supabaseAnonKey=eyJ...
+   ```
+   (oppure le variabili d'ambiente `METROA_SUPABASE_URL` e `METROA_SUPABASE_ANON_KEY`), poi ricompila.
+
+La chiave "anon" finisce nell'APK ed è pubblica per costruzione: cosa si può fare lo decidono i permessi del database.
+Senza configurazione l'app funziona lo stesso e tiene le segnalazioni solo sul telefono.
 
 ## Test
-`./gradlew testDebugUnitTest` prova il parser su un GTFS di esempio. Con
+`./gradlew testDebugUnitTest` prova il parser su un GTFS di esempio, il calcolo di posizioni e arrivi e il client del server. Con
 `METROA_GTFS_ZIP=/percorso/rome_static_gtfs.zip` verifica anche il file reale.
