@@ -33,18 +33,19 @@ fun SettingsScreen(vm: MetroViewModel, state: UiState, s: AppSettings, onBack: (
                 Text("← Linea", color = p.lineA)
             }
             Text("Impostazioni", color = p.ink, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
-            // L'anteprima resta ferma in alto mentre si scorrono le opzioni, ma ad altezza fissa: con la
-            // linea molto allungata verrebbe altrimenti a occupare tutto lo schermo e la lista non scorrerebbe
+        }
+        Column(
+            Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 32.dp)
+        ) {
+            // L'anteprima scorre via con il resto della pagina; ha un'altezza fissa perché con la linea molto
+            // allungata non occupi da sola tutto lo schermo
             InfoCard(Modifier.padding(top = 8.dp)) {
                 Text("Anteprima", color = p.mute, fontSize = 12.sp, modifier = Modifier.padding(bottom = 4.dp))
                 Box(Modifier.fillMaxWidth().height(PREVIEW_HEIGHT).clipToBounds()) {
                     Box(Modifier.wrapContentHeight(Alignment.Top, unbounded = true)) { Preview(s, state.segmentSeconds) }
                 }
             }
-        }
-        Column(
-            Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 32.dp)
-        ) {
+
             Section("Linea")
             InfoCard {
                 Text("Distanza fra le stazioni", color = p.ink, fontSize = 16.sp)
