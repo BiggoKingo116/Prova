@@ -31,6 +31,8 @@ data class AppSettings(
     val horizontalInLandscape: Boolean = true,
     /** Quanti minuti prima dell'arrivo suona l'avviso "il treno sta arrivando". */
     val alertLeadMinutes: Int = 2,
+    /** Durante "sono sul treno" condivide anche il percorso GPS (visibile solo al gestore del database). Scelta dell'utente. */
+    val shareGpsTrack: Boolean = false,
 ) {
     companion object {
         const val MIN_SPACING = 36
@@ -64,6 +66,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
             horizontalInLandscape = prefs.getBoolean("horizontalInLandscape", d.horizontalInLandscape),
             alertLeadMinutes = prefs.getInt("alertLeadMinutes", d.alertLeadMinutes)
                 .takeIf { it in AppSettings.ALERT_LEADS } ?: d.alertLeadMinutes,
+            shareGpsTrack = prefs.getBoolean("shareGpsTrack", d.shareGpsTrack),
         )
     }
 
@@ -83,6 +86,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
             .putString("favorites", s.favorites.joinToString(","))
             .putBoolean("horizontalInLandscape", s.horizontalInLandscape)
             .putInt("alertLeadMinutes", s.alertLeadMinutes)
+            .putBoolean("shareGpsTrack", s.shareGpsTrack)
             .apply()
     }
 

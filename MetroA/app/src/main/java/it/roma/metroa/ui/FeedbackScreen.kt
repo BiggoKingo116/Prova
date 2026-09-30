@@ -71,8 +71,7 @@ fun FeedbackScreen(
         Direction.entries.forEach { d ->
             Appearing(visible = d in state.askConfirm) {
                 ConfirmCard(d, state.delays[d] ?: NO_DATA) { yes ->
-                    vm.answerLive(d, yes)
-                    message = if (yes) "Grazie per la conferma!" else "Grazie! Segnato: in orario."
+                    message = outcomeText(vm.answerLive(d, yes))
                 }
             }
         }
@@ -112,9 +111,7 @@ fun FeedbackScreen(
         Button(
             onClick = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                message = vm.reportArrivedNow(station, dir)
-                    ?.let { "Grazie! Treno ${describeOffset(it)} rispetto all'orario." }
-                    ?: "Nessun treno in orario in questi 10 minuti: usa la scelta qui sotto."
+                message = outcomeText(vm.reportArrivedNow(station, dir))
             },
             enabled = !terminus,
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
@@ -143,8 +140,7 @@ fun FeedbackScreen(
                 val t = timing ?: return@OutlinedButton
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 val offset = when (t) { Timing.EARLY -> -minutes * 60; Timing.ON_TIME -> 0; Timing.LATE -> minutes * 60 }
-                vm.reportManual(station, dir, offset)
-                message = "Grazie! Segnalato: ${describeOffset(offset)}."
+                message = outcomeText(vm.reportManual(station, dir, offset))
                 timing = null
             },
             enabled = timing != null && !terminus,
@@ -175,6 +171,7 @@ fun FeedbackScreen(
             }
         }
 
+        Appearing(visible = state.notice != null) { NoticeCard(state.notice.orEmpty(), vm::dismissNotice) }
         SyncLine(state.sync, onRetry = vm::sync)
     }
 }

@@ -42,6 +42,19 @@ private const val MIN_LIVE = 2
 /** Storico: almeno 3 segnalazioni nella stessa fascia oraria (±1 h), o nella direzione in generale. */
 private const val MIN_HISTORY = 3
 
+/** Com'è andata una segnalazione fatta dall'utente, per dirglielo subito. */
+sealed interface ReportOutcome {
+    /** Salvata e in invio; [offsetS] è lo scarto dall'orario che è stato segnalato. */
+    data class Sent(val offsetS: Int) : ReportOutcome
+    /** Stessa stazione e direzione meno di 30 secondi fa: il server la rifiuterebbe come doppia. */
+    data object TooSoon : ReportOutcome
+    /** Nessun treno in orario vicino ad adesso (o nessuna stazione a cui riferirla). */
+    data object NoTrain : ReportOutcome
+}
+
+/** Dal server: al massimo una segnalazione ogni 30 secondi per telefono, stazione e direzione. */
+const val SAME_STATION_GAP_MS = 30_000L
+
 /** Possibile guasto: in [direction] almeno [count] segnalazioni di ritardo forte negli ultimi 15 minuti. */
 data class Alert(val direction: Direction, val count: Int, val medianS: Int, val stations: List<Int>)
 
@@ -113,11 +126,20 @@ fun classify(p: Passage, delayS: Int): Pair<Int, Arrival>? {
     }
 }
 
+/** Stato di invio nella colonna `uploaded`: da inviare, sul server, rifiutata dal server (e mai più inviata). */
+private const val PENDING = 0
+private const val UPLOADED = 1
+private const val REJECTED = 2
+
 /**
- * Copia locale di tutte le segnalazioni (proprie e scaricate dal server). Le proprie restano con
- * uploaded = 0 finché il server non le ha ricevute, così non si perdono senza rete.
+ * Copia locale di tutte le segnalazioni (proprie e scaricate dal server). Le proprie restano da inviare
+ * finché il server non le ha ricevute, così non si perdono senza rete; quelle che il server rifiuta
+ * restano segnate come rifiutate e non contano nelle stime, come per tutti gli altri.
  */
-class ReportDb(context: Context) : SQLiteOpenHelper(context, "reports.db", null, 2) {
+/** Un punto GPS di un viaggio, condiviso solo se l'utente l'ha scelto. */
+data class TrackPoint(val id: String, val tripId: String, val timeMs: Long, val lat: Double, val lon: Double, val accuracyM: Float)
+
+class ReportDb(context: Context) : SQLiteOpenHelper(context, "reports.db", null, 3) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             "CREATE TABLE report (id TEXT PRIMARY KEY, time_ms INTEGER NOT NULL, station INTEGER NOT NULL, " +
@@ -125,10 +147,45 @@ class ReportDb(context: Context) : SQLiteOpenHelper(context, "reports.db", null,
                 "trip_id TEXT)"
         )
         db.execSQL("CREATE INDEX report_time ON report(time_ms)")
+        createTrackTable(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) db.execSQL("ALTER TABLE report ADD COLUMN trip_id TEXT")
+        if (oldVersion < 3) createTrackTable(db)
+    }
+
+    private fun createTrackTable(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE track_point (id TEXT PRIMARY KEY, trip_id TEXT NOT NULL, time_ms INTEGER NOT NULL, " +
+                "lat REAL NOT NULL, lon REAL NOT NULL, accuracy REAL NOT NULL, uploaded INTEGER NOT NULL)"
+        )
+    }
+
+    fun savePoint(p: TrackPoint) {
+        writableDatabase.insertWithOnConflict("track_point", null, ContentValues().apply {
+            put("id", p.id); put("trip_id", p.tripId); put("time_ms", p.timeMs)
+            put("lat", p.lat); put("lon", p.lon); put("accuracy", p.accuracyM); put("uploaded", PENDING)
+        }, SQLiteDatabase.CONFLICT_IGNORE)
+    }
+
+    fun pendingPoints(limit: Int = 200): List<TrackPoint> = readableDatabase.rawQuery(
+        "SELECT id, trip_id, time_ms, lat, lon, accuracy FROM track_point WHERE uploaded = $PENDING ORDER BY time_ms LIMIT $limit",
+        null,
+    ).use { c ->
+        buildList { while (c.moveToNext()) add(TrackPoint(c.getString(0), c.getString(1), c.getLong(2), c.getDouble(3), c.getDouble(4), c.getFloat(5))) }
+    }
+
+    /** I punti inviati (o rifiutati) non servono più sul telefono. */
+    fun deletePoints(ids: List<String>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (id in ids) db.delete("track_point", "id = ?", arrayOf(id))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun save(reports: List<Report>, uploaded: Boolean) {
@@ -139,7 +196,7 @@ class ReportDb(context: Context) : SQLiteOpenHelper(context, "reports.db", null,
                 db.insertWithOnConflict("report", null, ContentValues().apply {
                     put("id", r.id); put("time_ms", r.timeMs); put("station", r.station)
                     put("direction", r.direction.name); put("offset_s", r.offsetS)
-                    put("source", r.source.name); put("uploaded", if (uploaded) 1 else 0); put("trip_id", r.tripId)
+                    put("source", r.source.name); put("uploaded", if (uploaded) UPLOADED else PENDING); put("trip_id", r.tripId)
                 }, if (uploaded) SQLiteDatabase.CONFLICT_REPLACE else SQLiteDatabase.CONFLICT_IGNORE)
             }
             db.setTransactionSuccessful()
@@ -149,10 +206,10 @@ class ReportDb(context: Context) : SQLiteOpenHelper(context, "reports.db", null,
     }
 
     fun recent(days: Int = 60): List<Report> = query(
-        "time_ms >= ?", (System.currentTimeMillis() - days * 24L * 3600 * 1000).toString()
+        "time_ms >= ? AND uploaded != $REJECTED", (System.currentTimeMillis() - days * 24L * 3600 * 1000).toString()
     )
 
-    fun pending(): List<Report> = query("uploaded = 0")
+    fun pending(): List<Report> = query("uploaded = $PENDING")
 
     /**
      * Cancella le segnalazioni già sul server (dal [sinceMs] in poi) che il server non ha più:
@@ -160,7 +217,7 @@ class ReportDb(context: Context) : SQLiteOpenHelper(context, "reports.db", null,
      */
     fun deleteMissing(serverIds: Set<String>, sinceMs: Long): Int {
         val db = writableDatabase
-        val local = db.rawQuery("SELECT id FROM report WHERE uploaded = 1 AND time_ms >= ?", arrayOf(sinceMs.toString()))
+        val local = db.rawQuery("SELECT id FROM report WHERE uploaded = $UPLOADED AND time_ms >= ?", arrayOf(sinceMs.toString()))
             .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
         val gone = local.filter { it !in serverIds }
         db.beginTransaction()
@@ -173,8 +230,12 @@ class ReportDb(context: Context) : SQLiteOpenHelper(context, "reports.db", null,
         return gone.size
     }
 
-    fun markUploaded(id: String) {
-        writableDatabase.update("report", ContentValues().apply { put("uploaded", 1) }, "id = ?", arrayOf(id))
+    fun markUploaded(id: String) = setStatus(id, UPLOADED)
+
+    fun markRejected(id: String) = setStatus(id, REJECTED)
+
+    private fun setStatus(id: String, status: Int) {
+        writableDatabase.update("report", ContentValues().apply { put("uploaded", status) }, "id = ?", arrayOf(id))
     }
 
     private fun query(where: String, vararg args: String): List<Report> =

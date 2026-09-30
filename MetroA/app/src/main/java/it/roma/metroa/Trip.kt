@@ -17,6 +17,8 @@ data class TripState(
     val match: TripMatch?,
     val passages: List<TripPassage> = emptyList(),
     val endMs: Long? = null,
+    /** L'utente ha scelto di condividere anche il percorso GPS di questo viaggio. */
+    val shareTrack: Boolean = false,
 ) {
     val active: Boolean get() = endMs == null
 
@@ -30,6 +32,9 @@ data class TripState(
     fun offsetAt(station: Int, timeMs: Long): Int? =
         match?.scheduledMs?.get(station)?.let { ((timeMs - it) / 1000).toInt() }
 
+    /** Il treno è ancora (o appena) nell'ultima stazione registrata: "sei a Flaminio" invece di "prossima: Lepanto". */
+    fun atLastStation(nowMs: Long): Boolean = passages.lastOrNull()?.let { nowMs - it.timeMs < 40_000 } ?: false
+
     /** Scarto all'ultima stazione registrata: la situazione del treno adesso. */
     val currentOffsetS: Int? get() = passages.lastOrNull()?.let { offsetAt(it.station, it.timeMs) }
 }
@@ -38,26 +43,56 @@ data class TripState(
 val Direction.step: Int get() = if (this == Direction.TO_ANAGNINA) 1 else -1
 
 /** Posizioni meno precise di così (tipico sottoterra con la sola rete) non bastano a dire in che stazione si è. */
-private const val MAX_ACCURACY_M = 400f
+private const val MAX_ACCURACY_M = 250f
 /** Fra due stazioni il treno impiega almeno ~50 s: passaggi più ravvicinati sono errori di posizione. */
 private const val MIN_GAP_MS = 30_000L
-/** Quante stazioni avanti cercare, se la posizione ne ha saltata qualcuna (tratte senza segnale). */
+/** Per saltare una stazione (tratta senza segnale) serve almeno questo tempo in più per ogni stazione saltata. */
+private const val PER_SKIPPED_STATION_MS = 40_000L
+/** Quante stazioni avanti cercare, se la posizione ne ha saltata qualcuna. */
 private const val LOOK_AHEAD = 3
 
 /**
- * La stazione che la posizione indica come appena raggiunta, fra le prossime [LOOK_AHEAD] nel verso di
- * marcia, o null. Il raggio cresce con l'imprecisione della posizione: 120 m più metà dell'errore dichiarato.
+ * La stazione che la posizione indica come raggiunta, fra le prossime [LOOK_AHEAD] nel verso di marcia,
+ * o null. Il raggio è 80 m più metà dell'errore dichiarato, al massimo 180 m: così la stazione si registra
+ * quando ci si arriva davvero, non già a qualche centinaio di metri. Saltare stazioni è possibile solo
+ * se è passato abbastanza tempo per arrivarci.
  */
 fun detectPassage(trip: TripState, lat: Double, lon: Double, accuracyM: Float, timeMs: Long): Int? {
     if (!trip.active || accuracyM > MAX_ACCURACY_M) return null
-    val last = trip.passages.lastOrNull()?.timeMs ?: trip.startMs
-    if (timeMs - last < MIN_GAP_MS) return null
-    val radius = 120.0 + accuracyM / 2
-    return (1..LOOK_AHEAD).map { trip.lastStation + it * trip.direction.step }
+    val elapsed = timeMs - (trip.passages.lastOrNull()?.timeMs ?: trip.startMs)
+    val radius = minOf(180.0, 80.0 + accuracyM / 2)
+    return (1..LOOK_AHEAD)
+        .filter { k -> elapsed >= MIN_GAP_MS + (k - 1) * PER_SKIPPED_STATION_MS }
+        .map { k -> trip.lastStation + k * trip.direction.step }
         .filter { it in STATIONS.indices }
         .map { it to distanceToStation(lat, lon, it) }
         .filter { it.second <= radius }
         .minByOrNull { it.second }?.first
+}
+
+/**
+ * Conferma dei passaggi: una stazione si registra solo quando due posizioni successive (entro un minuto)
+ * la indicano entrambe; il passaggio prende l'ora della prima. Una sola posizione sbagliata non basta più.
+ */
+class PassageConfirmer {
+    private var candidate: Pair<Int, Long>? = null
+
+    /** Restituisce stazione e ora del passaggio confermato, o null. */
+    fun offer(station: Int?, timeMs: Long): Pair<Int, Long>? {
+        val c = candidate
+        if (station == null) {
+            if (c != null && timeMs - c.second > 60_000) candidate = null
+            return null
+        }
+        if (c != null && c.first == station && timeMs - c.second <= 60_000) {
+            candidate = null
+            return c
+        }
+        candidate = station to timeMs
+        return null
+    }
+
+    fun reset() { candidate = null }
 }
 
 /** Tempo impiegato fra due stazioni passate, e quello previsto dall'orario (se la corsa è stata riconosciuta). */

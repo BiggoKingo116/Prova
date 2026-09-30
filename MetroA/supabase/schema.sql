@@ -18,7 +18,7 @@ create table if not exists public.reports (
 alter table public.reports add column if not exists trip_id uuid;
 
 -- ARRIVAL: "treno arrivato adesso"; MANUAL: scelta a mano; CONFIRM/DENY: conferma o smentita con un tocco;
--- TRIP: stazione passata durante un viaggio (mai le coordinate, solo stazione e ora)
+-- TRIP: stazione passata durante un viaggio (solo stazione e ora; il percorso GPS, se scelto, va in trip_points)
 alter table public.reports drop constraint if exists reports_source_check;
 alter table public.reports add constraint reports_source_check
     check (source in ('ARRIVAL', 'MANUAL', 'CONFIRM', 'DENY', 'TRIP'));
@@ -92,3 +92,43 @@ where abs(to_station - from_station) = 1
 group by direction, from_station, to_station;
 
 grant select on public.trip_segments, public.segment_times to anon;
+
+-- Percorso GPS dei viaggi, solo per chi sceglie di condividerlo (spento di base nell'app).
+-- Privato: l'app può aggiungere punti ma nessuno può leggerli, tranne il gestore dalla dashboard.
+create table if not exists public.trip_points (
+    id         uuid primary key,
+    trip_id    uuid             not null,
+    time_ms    bigint           not null,
+    lat        double precision not null check (lat between 41.6 and 42.2),   -- area di Roma
+    lon        double precision not null check (lon between 12.2 and 12.8),
+    accuracy_m real             not null check (accuracy_m between 0 and 2000),
+    device_id  uuid             not null,
+    created_at timestamptz      not null default now()
+);
+
+create index if not exists trip_points_trip on public.trip_points (trip_id, time_ms);
+create index if not exists trip_points_device on public.trip_points (device_id, created_at);
+
+-- Ora plausibile e al massimo 500 punti all'ora per telefono (uno ogni 10 s sono 360)
+create or replace function public.trip_points_check() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+    if abs(new.time_ms - extract(epoch from now()) * 1000) > 24 * 3600 * 1000 then
+        raise exception 'time_ms fuori intervallo';
+    end if;
+    if (select count(*) from public.trip_points
+        where device_id = new.device_id and created_at > now() - interval '1 hour') >= 500 then
+        raise exception 'troppi punti';
+    end if;
+    return new;
+end $$;
+
+drop trigger if exists trip_points_check on public.trip_points;
+create trigger trip_points_check before insert on public.trip_points
+    for each row execute function public.trip_points_check();
+
+alter table public.trip_points enable row level security;
+drop policy if exists "aggiungere" on public.trip_points;
+create policy "aggiungere" on public.trip_points for insert to anon with check (true);
+revoke all on public.trip_points from anon;
+grant insert (id, trip_id, time_ms, lat, lon, accuracy_m, device_id) on public.trip_points to anon;

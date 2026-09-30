@@ -210,7 +210,10 @@ private fun duration(s: Int) = "${s / 60}:${"%02d".format(kotlin.math.abs(s) % 6
  * stazione a mano o scendere. Concluso: quanto ci ha messo, tratto per tratto, rispetto all'orario.
  */
 @Composable
-fun TripCard(t: TripState, locationTracked: Boolean, onMark: () -> Unit, onFinish: () -> Unit, onDismiss: () -> Unit) {
+fun TripCard(
+    t: TripState, nowMs: Long, locationTracked: Boolean,
+    onMark: () -> Unit, onFinish: () -> Unit, onDismiss: () -> Unit,
+) {
     val p = LocalPalette.current
     val haptic = LocalHapticFeedback.current
     InfoCard(color = if (t.active) p.lineSoft else p.surface) {
@@ -218,9 +221,11 @@ fun TripCard(t: TripState, locationTracked: Boolean, onMark: () -> Unit, onFinis
             Text("🚇  Sul treno verso ${STATIONS[t.direction.terminus].name}", color = p.ink, fontSize = 16.sp,
                 fontWeight = FontWeight.SemiBold)
             val next = t.nextStation
+            // Appena registrata una stazione il treno è ancora lì: "A Flaminio", poi "Prossima: Lepanto"
+            val where = if (t.atLastStation(nowMs)) "A ${STATIONS[t.lastStation].name}"
+                else next?.let { "Prossima: ${STATIONS[it].name}" } ?: "Capolinea"
             Text(
-                (next?.let { "Prossima: ${STATIONS[it].name}" } ?: "Capolinea") +
-                    (t.currentOffsetS?.let { " · treno ${describeOffset(it)}" } ?: ""),
+                where + (t.currentOffsetS?.let { " · treno ${describeOffset(it)}" } ?: ""),
                 color = p.ink, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp),
             )
             Text(
@@ -264,6 +269,25 @@ fun TripCard(t: TripState, locationTracked: Boolean, onMark: () -> Unit, onFinis
                 Text("Tempi reali / orario. Grazie: le stazioni registrate sono state condivise e migliorano le stime.",
                     color = p.mute, fontSize = 12.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 6.dp))
             }
+        }
+    }
+}
+
+/** Cosa dire all'utente dopo una segnalazione. */
+fun outcomeText(o: ReportOutcome): String = when (o) {
+    is ReportOutcome.Sent -> "Grazie! Segnalato: treno ${describeOffset(o.offsetS)}."
+    ReportOutcome.TooSoon -> "Hai già segnalato questa stazione in questa direzione meno di 30 secondi fa."
+    ReportOutcome.NoTrain -> "Nessun treno in orario vicino ad adesso: non inviata."
+}
+
+/** Messaggio da leggere una volta (per esempio una segnalazione rifiutata dal server), con "OK" per chiuderlo. */
+@Composable
+fun NoticeCard(text: String, onDismiss: () -> Unit) {
+    val p = LocalPalette.current
+    InfoCard(color = p.lineSoft) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("⚠  $text", color = p.ink, fontSize = 14.sp, lineHeight = 19.sp, modifier = Modifier.weight(1f))
+            TextButton(onClick = onDismiss) { Text("OK", color = p.lineA) }
         }
     }
 }

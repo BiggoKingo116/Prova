@@ -15,8 +15,10 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 
-/** Entro questa distanza si è "in" stazione; la posizione resta sul telefono e non viene mai inviata. */
-private const val NEARBY_MAX_M = 500
+/** Entro questa distanza si è "in" stazione; la posizione resta sul telefono se l'utente non sceglie di condividerla. */
+private const val NEARBY_MAX_M = 350
+/** Oltre questo errore dichiarato (tipico della sola rete cellulare in galleria) non si dice "sei a …". */
+const val PRECISE_ENOUGH_M = 250
 
 /** Dove si trova il telefono rispetto alla linea. */
 sealed interface Where {
@@ -31,7 +33,7 @@ sealed interface Where {
 
     /** Stazione più vicina [station] a [distanceM] metri; [precise] false se l'utente ha concesso solo la posizione approssimativa. */
     data class Found(val station: Int, val distanceM: Int, val accuracyM: Int, val precise: Boolean) : Where {
-        val atStation: Boolean get() = distanceM <= NEARBY_MAX_M
+        val atStation: Boolean get() = distanceM <= NEARBY_MAX_M && accuracyM <= PRECISE_ENOUGH_M
     }
 }
 
@@ -44,17 +46,18 @@ fun whereFrom(lat: Double, lon: Double, accuracyM: Float, precise: Boolean): Whe
 }
 
 /**
- * Se una nuova posizione è migliore di quella che si ha: più recente di oltre 30 secondi, oppure
- * più precisa, oppure appena più recente e non molto meno precisa.
+ * Se una nuova posizione è migliore di quella che si ha. Una più precisa vince sempre; una più recente
+ * vince se non è molto più vaga, altrimenti solo quando la vecchia ha più di 2 minuti: in galleria una
+ * posizione di rete sbagliata di centinaia di metri non deve sostituire un buon GPS di poco prima.
  */
 fun isBetterFix(newTimeMs: Long, newAccM: Float, oldTimeMs: Long?, oldAccM: Float?): Boolean {
     if (oldTimeMs == null || oldAccM == null) return true
     val dt = newTimeMs - oldTimeMs
     return when {
-        dt > 30_000 -> true
         dt < -30_000 -> false
-        newAccM < oldAccM -> true
-        dt > 0 && newAccM <= oldAccM + 50 -> true
+        newAccM <= oldAccM -> true
+        dt > 120_000 -> true
+        dt > 0 && newAccM <= maxOf(oldAccM * 2, oldAccM + 50) -> true
         else -> false
     }
 }
@@ -90,7 +93,8 @@ fun locationUpdates(context: Context): Flow<Location> = callbackFlow {
 
     // Le ultime posizioni note danno subito un risultato, anche prima del primo aggiornamento
     providers.mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
-        .filter { System.currentTimeMillis() - it.time < 10 * 60_000 }
+        // Solo se recenti: su un treno in movimento una posizione di qualche minuto fa è già un'altra stazione
+        .filter { System.currentTimeMillis() - it.time < 2 * 60_000 }
         .sortedBy { it.time }
         .forEach { trySend(it) }
 

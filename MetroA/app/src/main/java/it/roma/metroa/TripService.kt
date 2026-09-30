@@ -41,10 +41,13 @@ object TripTracker {
         _state.value = runCatching { decode(prefs(context).getString("trip", null)) }.getOrNull()
     }
 
-    fun start(context: Context, dir: Direction, boardStation: Int) {
+    fun start(context: Context, dir: Direction, boardStation: Int, shareTrack: Boolean) {
         val now = System.currentTimeMillis()
         val sched = schedule(context)
-        save(context, TripState(UUID.randomUUID().toString(), dir, boardStation, now, sched?.matchTrip(boardStation, dir, now)))
+        confirmer.reset()
+        lastPointMs = 0
+        save(context, TripState(UUID.randomUUID().toString(), dir, boardStation, now, sched?.matchTrip(boardStation, dir, now),
+            shareTrack = shareTrack))
         // Senza permesso di posizione niente servizio (Android 14 non lo consente): si segnano le stazioni a mano
         if (hasLocationPermission(context)) {
             ContextCompat.startForegroundService(context, Intent(context, TripService::class.java))
@@ -57,9 +60,20 @@ object TripTracker {
         t.nextStation?.let { record(context, it, System.currentTimeMillis(), manual = true) }
     }
 
+    private val confirmer = PassageConfirmer()
+    private var lastPointMs = 0L
+
     fun onLocation(context: Context, lat: Double, lon: Double, accuracyM: Float, timeMs: Long) {
         val t = _state.value ?: return
-        detectPassage(t, lat, lon, accuracyM, timeMs)?.let { record(context, it, timeMs, manual = false) }
+        // Percorso GPS: solo se l'utente l'ha scelto, un punto ogni 10 secondi, non quelli troppo vaghi
+        if (t.active && t.shareTrack && accuracyM <= 500 && timeMs - lastPointMs >= 10_000) {
+            lastPointMs = timeMs
+            val point = TrackPoint(UUID.randomUUID().toString(), t.id, timeMs, lat, lon, accuracyM)
+            val app = context.applicationContext
+            CoroutineScope(Dispatchers.IO).launch { ReportDb(app).use { it.savePoint(point) } }
+        }
+        confirmer.offer(detectPassage(t, lat, lon, accuracyM, timeMs), timeMs)
+            ?.let { (station, at) -> record(context, station, at, manual = false) }
     }
 
     /** "Sono sceso": il viaggio si chiude e resta il riepilogo finché l'utente non lo chiude. */
@@ -67,6 +81,7 @@ object TripTracker {
         val t = _state.value?.takeIf { it.active } ?: return
         save(context, t.copy(endMs = System.currentTimeMillis()))
         context.stopService(Intent(context, TripService::class.java))
+        uploadNow(context) // gli ultimi punti del percorso, se condiviso
     }
 
     fun dismiss(context: Context) {
@@ -76,6 +91,7 @@ object TripTracker {
 
     private fun record(context: Context, station: Int, timeMs: Long, manual: Boolean) {
         var t = _state.value ?: return
+        confirmer.reset()
         // Al primo passaggio si ricontrolla la corsa: l'ora in cui si preme "sono sul treno" è approssimativa
         if (t.passages.isEmpty()) {
             schedule(context)?.matchTrip(station, t.direction, timeMs)?.let { t = t.copy(match = it) }
@@ -103,6 +119,14 @@ object TripTracker {
         }
     }
 
+    private fun uploadNow(context: Context) {
+        val app = context.applicationContext
+        val api = reportApiOrNull() ?: return
+        CoroutineScope(Dispatchers.IO).launch {
+            ReportDb(app).use { db -> runCatching { uploadPending(db, api, deviceId(app)) } }
+        }
+    }
+
     private fun schedule(context: Context): Schedule? =
         schedule ?: readCachedSchedule(context.filesDir).also { schedule = it }
 
@@ -117,6 +141,7 @@ object TripTracker {
     private fun encode(t: TripState) = JSONObject()
         .put("id", t.id).put("direction", t.direction.name).put("board", t.boardStation).put("start", t.startMs)
         .put("end", t.endMs ?: -1)
+        .put("shareTrack", t.shareTrack)
         .put("tripId", t.match?.tripId)
         .put("sched", JSONObject().apply { t.match?.scheduledMs?.forEach { (k, v) -> put(k.toString(), v) } })
         .put("passages", JSONArray().apply {
@@ -134,6 +159,7 @@ object TripTracker {
             o.getString("id"), Direction.valueOf(o.getString("direction")), o.getInt("board"), o.getLong("start"), match,
             (0 until ps.length()).map { ps.getJSONObject(it).let { p -> TripPassage(p.getInt("s"), p.getLong("t"), p.getBoolean("m")) } },
             o.getLong("end").takeIf { it >= 0 },
+            shareTrack = o.optBoolean("shareTrack", false),
         )
     }
 }
@@ -212,7 +238,12 @@ class TripService : Service() {
             return NotificationCompat.Builder(context, CHANNEL)
                 .setSmallIcon(android.R.drawable.ic_menu_mylocation)
                 .setContentTitle("Sul treno verso ${STATIONS[t.direction.terminus].name}")
-                .setContentText((next?.let { "Prossima: ${STATIONS[it].name}" } ?: "Capolinea") + offset)
+                .setContentText(
+                    listOfNotNull(
+                        t.passages.lastOrNull()?.let { "Ultima: ${STATIONS[it.station].name}" },
+                        next?.let { "prossima: ${STATIONS[it].name}" } ?: "capolinea",
+                    ).joinToString(" · ").replaceFirstChar { it.uppercase() } + offset
+                )
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setContentIntent(PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE))

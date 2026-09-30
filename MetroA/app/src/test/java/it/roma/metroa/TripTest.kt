@@ -36,6 +36,35 @@ class TripTest {
         assertNull(detectPassage(done, at(10).lat, at(10).lon, 30f, start + 90_000))
     }
 
+    @Test fun skippingNeedsTimeToGetThere() {
+        // Posizione su Vittorio Emanuele (3 stazioni avanti) appena 60 s dopo la salita: impossibile, ignorata
+        assertNull(detectPassage(trip(), at(12).lat, at(12).lon, 30f, start + 60_000))
+        // Una stazione avanti dopo 60 s: normale
+        assertEquals(10, detectPassage(trip(), at(10).lat, at(10).lon, 30f, start + 60_000))
+    }
+
+    @Test fun registersOnlyCloseToTheStation() {
+        // 300 m prima di Repubblica, verso Barberini: ancora troppo lontano per dire "arrivati"
+        val approaching = detectPassage(trip(), at(10).lat, at(10).lon - 0.0036, 20f, start + 90_000)
+        assertNull(approaching)
+    }
+
+    @Test fun passageNeedsTwoAgreeingFixes() {
+        val c = PassageConfirmer()
+        assertNull(c.offer(10, 1_000))                 // prima posizione: solo candidata
+        assertEquals(10 to 1_000L, c.offer(10, 6_000)) // seconda uguale: confermata, con l'ora della prima
+        assertNull(c.offer(11, 10_000))
+        assertNull(c.offer(12, 15_000))                // posizioni in disaccordo: niente
+        assertNull(c.offer(12, 90_000))                // troppo distanti nel tempo: si riparte
+        assertEquals(12 to 90_000L, c.offer(12, 95_000))
+    }
+
+    @Test fun staysAtStationRightAfterPassing() {
+        val t = trip(passages = listOf(TripPassage(10, start + 60_000, false)))
+        assertTrue(t.atLastStation(start + 80_000))
+        assertFalse(t.atLastStation(start + 120_000))
+    }
+
     @Test fun towardBattistiniGoesDown() {
         val t = trip(board = 11, dir = Direction.TO_BATTISTINI)
         assertEquals(10, t.nextStation)

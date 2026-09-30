@@ -22,6 +22,13 @@ class NearbyStationTest {
         assertNull((far as Where).station)
     }
 
+    @Test fun vagueFixIsNeverAtAStation() {
+        val flaminio = STATIONS[7]
+        assertTrue(whereFrom(flaminio.lat, flaminio.lon, 30f, precise = true).atStation)
+        // Stesso punto ma errore di 600 m (sola rete, in galleria): non si dice "sei a Flaminio"
+        assertFalse(whereFrom(flaminio.lat, flaminio.lon, 600f, precise = true).atStation)
+    }
+
     @Test fun everyStationIsItsOwnNearest() {
         STATIONS.forEachIndexed { i, s -> assertEquals(s.name, i, whereFrom(s.lat, s.lon, 10f, true).station) }
     }
@@ -42,8 +49,10 @@ class NearbyStationTest {
         assertFalse(isBetterFix(5_000, 900f, 5_000, 30f))
         // Poco più recente e precisione simile: meglio (ci si sta muovendo)
         assertTrue(isBetterFix(8_000, 60f, 5_000, 30f))
-        // Molto più recente vince comunque: la vecchia non dice più dove si è
-        assertTrue(isBetterFix(100_000, 900f, 5_000, 10f))
+        // Una posizione di rete molto vaga non sostituisce un buon GPS di poco prima (in galleria sbaglia stazione)...
+        assertFalse(isBetterFix(100_000, 900f, 5_000, 10f))
+        // ...ma dopo 2 minuti sì: la vecchia non dice più dove si è
+        assertTrue(isBetterFix(130_000, 900f, 5_000, 10f))
         // Molto più vecchia perde comunque
         assertFalse(isBetterFix(5_000, 5f, 100_000, 900f))
     }

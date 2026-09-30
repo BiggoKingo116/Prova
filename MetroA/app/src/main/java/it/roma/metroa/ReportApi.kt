@@ -20,8 +20,11 @@ class ReportApi(
     private val anonKey: String,
     private val client: OkHttpClient = OkHttpClient.Builder().callTimeout(20, TimeUnit.SECONDS).build(),
 ) {
-    /** Esito dell'invio di una segnalazione: [permanent] se il server l'ha rifiutata e non va ritentata. */
-    class UploadResult(val ok: Boolean, val permanent: Boolean)
+    /**
+     * Esito dell'invio di una segnalazione: [permanent] se il server l'ha rifiutata e non va ritentata;
+     * [message] è il motivo dato dal database (per esempio "segnalazione doppia").
+     */
+    class UploadResult(val ok: Boolean, val permanent: Boolean, val message: String? = null)
 
     fun upload(r: Report, deviceId: String): UploadResult {
         val body = JSONObject()
@@ -35,7 +38,10 @@ class ReportApi(
             .build()
         client.newCall(request).execute().use { resp ->
             // 4xx: dati rifiutati dai controlli del server (fuori limiti, troppe segnalazioni di fila…)
-            return UploadResult(resp.isSuccessful, permanent = resp.code in 400..499 && resp.code != 401 && resp.code != 429)
+            val message = if (resp.isSuccessful) null
+                else runCatching { JSONObject(resp.body?.string().orEmpty()).optString("message") }.getOrNull()
+            return UploadResult(resp.isSuccessful, permanent = resp.code in 400..499 && resp.code != 401 && resp.code != 429,
+                message = message?.ifBlank { null })
         }
     }
 
@@ -65,6 +71,25 @@ class ReportApi(
                 }.getOrNull()
             }
             return reports to maxSeq
+        }
+    }
+
+    /**
+     * Invia un gruppo di punti GPS di viaggio (tabella privata `trip_points`: si scrive, non si legge).
+     * Restituisce true se il server li ha presi o rifiutati per sempre (in entrambi i casi non si ritentano).
+     */
+    fun uploadPoints(points: List<TrackPoint>, deviceId: String): Boolean {
+        val body = JSONArray()
+        for (p in points) body.put(JSONObject()
+            .put("id", p.id).put("trip_id", p.tripId).put("time_ms", p.timeMs)
+            .put("lat", p.lat).put("lon", p.lon).put("accuracy_m", p.accuracyM.toDouble()).put("device_id", deviceId))
+        val request = request("trip_points")
+            .header("Prefer", "resolution=ignore-duplicates,return=minimal")
+            .post(body.toString().toRequestBody(JSON))
+            .build()
+        client.newCall(request).execute().use { resp ->
+            if (resp.isSuccessful || resp.code in 400..499 && resp.code != 401 && resp.code != 429) return true
+            throw IOException("Il server ha risposto ${resp.code}")
         }
     }
 
@@ -115,13 +140,43 @@ fun deviceId(context: android.content.Context): String {
         ?: java.util.UUID.randomUUID().toString().also { prefs.edit().putString("device_id", it).apply() }
 }
 
+/** Una segnalazione che il server non ha accettato, con il motivo. */
+data class Rejection(val report: Report, val reason: String?)
+
+/** Un solo invio alla volta in tutta l'app: l'app e il servizio del viaggio non mandano due volte la stessa segnalazione. */
+private val uploadLock = Any()
+
 /**
  * Invia le segnalazioni in attesa, una alla volta. Quelle rifiutate dal server (doppie, fuori limiti)
- * restano sul telefono ma non si ritentano; al primo errore di rete si smette e si riprova più tardi.
+ * restano sul telefono segnate come rifiutate e vengono restituite, per dirlo all'utente; al primo errore
+ * di rete si smette e si riprova più tardi.
  */
-fun uploadPending(db: ReportDb, api: ReportApi, deviceId: String) {
+fun uploadPending(db: ReportDb, api: ReportApi, deviceId: String): List<Rejection> = synchronized(uploadLock) {
+    val rejected = ArrayList<Rejection>()
     for (r in db.pending()) {
         val res = api.upload(r, deviceId)
-        if (res.ok || res.permanent) db.markUploaded(r.id) else throw IOException("Invio non riuscito")
+        when {
+            res.ok -> db.markUploaded(r.id)
+            res.permanent -> { db.markRejected(r.id); rejected += Rejection(r, res.message) }
+            else -> throw IOException("Invio non riuscito")
+        }
     }
+    // Punti GPS dei viaggi, solo di chi ha scelto di condividerli: a gruppi di 200
+    while (true) {
+        val points = db.pendingPoints()
+        if (points.isEmpty()) break
+        api.uploadPoints(points, deviceId)
+        db.deletePoints(points.map { it.id })
+        if (points.size < 200) break
+    }
+    rejected
+}
+
+/** Il motivo di un rifiuto del server, detto in modo comprensibile. */
+fun rejectionText(reason: String?): String = when {
+    reason == null -> "dati non accettati"
+    "doppia" in reason -> "c'era già una tua segnalazione per la stessa stazione e direzione meno di 30 secondi prima"
+    "troppe" in reason -> "troppe segnalazioni nell'ultima ora"
+    "time_ms" in reason -> "l'ora del telefono non è giusta"
+    else -> reason
 }

@@ -116,12 +116,13 @@ private fun LineScreen(
             .padding(bottom = 32.dp)
     ) {
         Header(state, onRetry = vm::load, onSettings = onSettings)
+        Appearing(visible = state.notice != null) { NoticeCard(state.notice.orEmpty(), vm::dismissNotice) }
 
         val trip by vm.trip.collectAsStateWithLifecycle()
         val t = trip
         Appearing(visible = t != null) {
             if (t != null) {
-                TripCard(t, locationTracked = state.location is Where.Found,
+                TripCard(t, now, locationTracked = state.location is Where.Found,
                     onMark = vm::markNextStation, onFinish = vm::finishTrip, onDismiss = vm::dismissTrip)
             }
         }
@@ -232,7 +233,11 @@ private fun LineScreen(
         tripAfterPermission = null
     }
     if (startingTrip) {
-        StartTripSheet(state.location.station, onDismiss = { startingTrip = false }) { d, st ->
+        StartTripSheet(
+            state.location.station, shareTrack = settings.shareGpsTrack,
+            onShareTrackChange = { v -> vm.updateSettings { it.copy(shareGpsTrack = v) } },
+            onDismiss = { startingTrip = false },
+        ) { d, st ->
             startingTrip = false
             if (!TrainAlerts.canNotify(context) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 tripAfterPermission = d to st
@@ -337,7 +342,7 @@ private fun Footer() {
 private fun StationSheet(
     index: Int, toBattistini: List<Arrival>, toAnagnina: List<Arrival>,
     favorite: Boolean, alert: TrainAlert?,
-    onToggleFavorite: () -> Unit, onArrived: (Direction) -> Int?, onAlert: (Direction) -> String,
+    onToggleFavorite: () -> Unit, onArrived: (Direction) -> ReportOutcome, onAlert: (Direction) -> String,
     onCancelAlert: () -> Unit, onFeedback: () -> Unit, onDismiss: () -> Unit,
 ) {
     val p = LocalPalette.current
@@ -372,7 +377,7 @@ private fun StationSheet(
 @Composable
 private fun DirectionRow(
     station: Int, dir: Direction, arrivals: List<Arrival>, alert: TrainAlert?,
-    onArrived: () -> Int?, onAlert: () -> String, onCancelAlert: () -> Unit,
+    onArrived: () -> ReportOutcome, onAlert: () -> String, onCancelAlert: () -> Unit,
 ) {
     // Al capolinea di partenza si segnala la partenza invece dell'arrivo
     val departure = isStartOfLine(station, dir)
@@ -400,8 +405,7 @@ private fun DirectionRow(
                 TextButton(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        result = onArrived()?.let { "Grazie! Treno ${describeOffset(it)}" }
-                            ?: "Nessun treno in orario vicino ad adesso"
+                        result = outcomeText(onArrived())
                     },
                     contentPadding = PaddingValues(0.dp),
                 ) { Text(if (departure) "Treno partito adesso" else "Treno arrivato adesso", color = p.lineA) }
@@ -425,7 +429,10 @@ private fun DirectionRow(
 /** Inizio del viaggio: direzione e stazione di salita (quella vicina, se nota). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun StartTripSheet(nearby: Int?, onDismiss: () -> Unit, onStart: (Direction, Int) -> Unit) {
+private fun StartTripSheet(
+    nearby: Int?, shareTrack: Boolean, onShareTrackChange: (Boolean) -> Unit,
+    onDismiss: () -> Unit, onStart: (Direction, Int) -> Unit,
+) {
     val p = LocalPalette.current
     var station by remember { mutableIntStateOf(nearby ?: 11) }
     var dir by remember { mutableStateOf<Direction?>(null) }
@@ -434,7 +441,7 @@ private fun StartTripSheet(nearby: Int?, onDismiss: () -> Unit, onStart: (Direct
             Text("🚇 Sono sul treno", color = p.ink, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
             Text(
                 "L'app riconosce le stazioni che passi (anche a schermo spento) e le condivide con l'orario: così " +
-                    "tutti vedono quanto ci mettono davvero i treni. Condivide solo stazione e ora, mai la tua posizione.",
+                    "tutti vedono quanto ci mettono davvero i treni. Di base condivide solo stazione e ora.",
                 color = p.mute, fontSize = 14.sp, lineHeight = 19.sp, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
             )
             Text("Sei salito a", color = p.mute, fontSize = 14.sp)
@@ -444,6 +451,17 @@ private fun StartTripSheet(nearby: Int?, onDismiss: () -> Unit, onStart: (Direct
                 Direction.entries.filterNot { isEndOfLine(station, it) }.forEach { d ->
                     FilterChip(selected = dir == d, onClick = { dir = d }, label = { Text(directionLabel(d)) }, colors = chipColors())
                 }
+            }
+            // Scelta dell'utente, spenta di base: il percorso GPS aiuta a riconoscere meglio le stazioni
+            Row(Modifier.padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Aiuta anche con il percorso GPS", color = p.ink, fontSize = 15.sp)
+                    Text("Un punto ogni 10 s durante il viaggio. Lo vede solo il gestore del database, " +
+                        "non gli altri utenti; serve a migliorare il riconoscimento delle stazioni.",
+                        color = p.mute, fontSize = 12.sp, lineHeight = 16.sp)
+                }
+                Switch(checked = shareTrack, onCheckedChange = onShareTrackChange,
+                    colors = SwitchDefaults.colors(checkedTrackColor = p.lineA, checkedThumbColor = Color.White))
             }
             val chosen = dir?.takeIf { !isEndOfLine(station, it) }
             Button(

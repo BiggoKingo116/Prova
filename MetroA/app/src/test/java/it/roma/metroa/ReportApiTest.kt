@@ -50,9 +50,23 @@ class ReportApiTest {
         val r = api.upload(report, "device-1")
         assertFalse(r.ok)
         assertTrue(r.permanent)
+        assertEquals("segnalazione doppia", r.message)
+        assertTrue(rejectionText(r.message).contains("30 secondi"))
         // Server irraggiungibile o in errore: si ritenta più tardi
         server.enqueue(MockResponse().setResponseCode(503))
         assertFalse(api.upload(report, "device-1").permanent)
+    }
+
+    @Test fun gpsPointsGoToThePrivateTable() {
+        server.enqueue(MockResponse().setResponseCode(201))
+        val p = TrackPoint("p1", "22222222-2222-2222-2222-222222222222", 1_790_000_000_000, 41.9127, 12.4764, 15f)
+        assertTrue(api.uploadPoints(listOf(p), "device-1"))
+        val req = server.takeRequest()
+        assertEquals("/rest/v1/trip_points", req.path)
+        val arr = org.json.JSONArray(req.body.readUtf8())
+        assertEquals(1, arr.length())
+        assertEquals(41.9127, arr.getJSONObject(0).getDouble("lat"), 1e-9)
+        assertEquals("device-1", arr.getJSONObject(0).getString("device_id"))
     }
 
     @Test fun fetchIdsReadsAllPages() {

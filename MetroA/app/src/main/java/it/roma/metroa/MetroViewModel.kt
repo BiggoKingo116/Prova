@@ -42,6 +42,8 @@ data class UiState(
     val segmentSeconds: FloatArray? = null,
     /** Avviso "il treno sta arrivando" impostato e non ancora passato. */
     val trainAlert: TrainAlert? = null,
+    /** Messaggio da mostrare una volta, per esempio una segnalazione rifiutata dal server. */
+    val notice: String? = null,
 )
 
 class MetroViewModel(app: Application) : AndroidViewModel(app) {
@@ -93,7 +95,8 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun startTrip(dir: Direction, boardStation: Int) = TripTracker.start(getApplication(), dir, boardStation)
+    fun startTrip(dir: Direction, boardStation: Int) =
+        TripTracker.start(getApplication(), dir, boardStation, shareTrack = _settings.value.shareGpsTrack)
     fun markNextStation() = TripTracker.markNextStation(getApplication())
     fun finishTrip() = TripTracker.finish(getApplication())
     fun dismissTrip() = TripTracker.dismiss(getApplication())
@@ -232,10 +235,9 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
      * "Il treno è arrivato adesso": lo scarto si calcola dal passaggio programmato più vicino.
      * Restituisce lo scarto in secondi, o null se entro 10 minuti non c'è un passaggio in orario.
      */
-    fun reportArrivedNow(station: Int, dir: Direction): Int? {
-        val offset = schedule?.offsetFromNearest(station, dir, ZonedDateTime.now(ROME)) ?: return null
-        submit(station, dir, offset, ReportSource.ARRIVAL)
-        return offset
+    fun reportArrivedNow(station: Int, dir: Direction): ReportOutcome {
+        val offset = schedule?.offsetFromNearest(station, dir, ZonedDateTime.now(ROME)) ?: return ReportOutcome.NoTrain
+        return submit(station, dir, offset, ReportSource.ARRIVAL)
     }
 
     /** Segnalazione a mano: [offsetS] positivo = treni in ritardo, negativo = in anticipo, 0 = in orario. */
@@ -245,24 +247,37 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
      * Conferma con un tocco (o smentita, che vale "in orario") della stima dal vivo di [dir].
      * La stazione è quella vicina se nota, altrimenti quella della segnalazione più recente.
      */
-    fun answerLive(dir: Direction, confirm: Boolean) {
+    fun answerLive(dir: Direction, confirm: Boolean): ReportOutcome {
         val now = System.currentTimeMillis()
         val estimate = model.forDirection(dir, now, ZonedDateTime.now(ROME).hour)
         val station = _state.value.location.station
             ?: model.recent(now).filter { it.direction == dir }.maxByOrNull { it.timeMs }?.station
-            ?: return
-        if (confirm) submit(station, dir, estimate.medianS, ReportSource.CONFIRM)
-        else submit(station, dir, 0, ReportSource.DENY)
+            ?: return ReportOutcome.NoTrain
+        val outcome = if (confirm) submit(station, dir, estimate.medianS, ReportSource.CONFIRM)
+            else submit(station, dir, 0, ReportSource.DENY)
+        // Già segnalato da poco: la domanda sparisce comunque, la risposta c'è già
+        if (outcome == ReportOutcome.TooSoon) answeredAt[dir] = now
+        return outcome
     }
 
-    private var lastSubmitted: Report? = null
+    fun dismissNotice() = _state.update { it.copy(notice = null) }
 
-    private fun submit(station: Int, dir: Direction, offsetS: Int, source: ReportSource) {
+    /** Le proprie segnalazioni degli ultimi secondi, per non mandarne due che il server rifiuterebbe. */
+    private val ownRecent = ArrayList<Report>()
+
+    /** C'è già una propria segnalazione (anche di un viaggio in corso) per questa stazione e direzione da meno di 30 s? */
+    private fun tooSoon(station: Int, dir: Direction, nowMs: Long): Boolean {
+        ownRecent.removeAll { nowMs - it.timeMs >= SAME_STATION_GAP_MS }
+        val trip = TripTracker.state.value
+        return ownRecent.any { it.station == station && it.direction == dir } ||
+            (trip != null && trip.direction == dir &&
+                trip.passages.any { it.station == station && nowMs - it.timeMs < SAME_STATION_GAP_MS })
+    }
+
+    private fun submit(station: Int, dir: Direction, offsetS: Int, source: ReportSource): ReportOutcome {
         val r = Report(UUID.randomUUID().toString(), System.currentTimeMillis(), station, dir, offsetS, source)
-        // Doppio tocco sullo stesso treno: il server lo rifiuterebbe comunque (30 s per stazione e direzione)
-        val prev = lastSubmitted
-        if (prev != null && prev.station == station && prev.direction == dir && r.timeMs - prev.timeMs < 30_000) return
-        lastSubmitted = r
+        if (tooSoon(station, dir, r.timeMs)) return ReportOutcome.TooSoon
+        ownRecent += r
         answeredAt[dir] = r.timeMs
         model = DelayModel(model.reports + r)
         refresh()
@@ -270,6 +285,7 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.IO) { db.save(listOf(r), uploaded = false) }
             sync()
         }
+        return ReportOutcome.Sent(offsetS)
     }
 
     /** Invia le segnalazioni in attesa e scarica quelle nuove degli altri (una sincronizzazione alla volta). */
@@ -287,7 +303,14 @@ class MetroViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun syncNow() = withContext(Dispatchers.IO) {
         val api = api
         if (api != null) try {
-            uploadPending(db, api, deviceId)
+            val rejected = uploadPending(db, api, deviceId)
+            if (rejected.isNotEmpty()) {
+                val r = rejected.last()
+                _state.update {
+                    it.copy(notice = "Segnalazione su ${STATIONS[r.report.station].name} non accettata dal server: " +
+                        rejectionText(r.reason) + if (rejected.size > 1) " (e altre ${rejected.size - 1})" else "")
+                }
+            }
             val since = System.currentTimeMillis() - 60L * 24 * 3600 * 1000
             var seq = prefs.getLong("last_seq", 0)
             while (true) {

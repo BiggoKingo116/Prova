@@ -125,9 +125,12 @@ fun SettingsScreen(vm: MetroViewModel, state: UiState, s: AppSettings, onBack: (
                 Toggle("Schermo sempre acceso", "Mentre l'app è aperta, utile in banchina", s.keepScreenOn) { v ->
                     set { it.copy(keepScreenOn = v) }
                 }
-                Toggle("Usa la posizione", "Per mostrare la stazione più vicina; non lascia il telefono", s.useLocation) { v ->
+                Toggle("Usa la posizione", "Per la stazione più vicina e per riconoscere le stazioni in viaggio", s.useLocation) { v ->
                     set { it.copy(useLocation = v) }
                 }
+                Toggle("Condividi il percorso GPS nei viaggi",
+                    "Solo durante \"Sono sul treno\", un punto ogni 10 s. Lo vede solo il gestore del database",
+                    s.shareGpsTrack) { v -> set { it.copy(shareGpsTrack = v) } }
             }
 
             OutlinedButton(

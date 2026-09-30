@@ -45,8 +45,16 @@ notifica fissa): quando il telefono è entro ~120 m da una delle prossime 3 staz
 il segnale può mancare: la notifica e il riquadro hanno "Siamo a …" per segnarla a mano. Al capolinea o con
 "Sono sceso" il viaggio si chiude e mostra quanto ci ha messo il treno, tratto per tratto, rispetto all'orario.
 
+Una stazione si registra quando due posizioni di fila la indicano entro ~180 m (le posizioni con errore
+oltre 250 m, tipiche della sola rete in galleria, non contano); saltare stazioni senza segnale è possibile solo
+se è passato il tempo per arrivarci. Appena registrata, il riquadro dice "A Flaminio" e poi "Prossima: …".
+
 Ogni stazione passata diventa una segnalazione online (tipo `TRIP`, con lo stesso `trip_id` per tutto il
-viaggio): corregge subito le stime di tutti. **La posizione non viene mai inviata**, solo stazione e ora.
+viaggio): corregge subito le stime di tutti. Di base si inviano solo stazione e ora.
+
+**Percorso GPS (facoltativo, spento di base)**: chi lo attiva (all'inizio del viaggio o nelle impostazioni)
+condivide anche un punto GPS ogni 10 s durante il viaggio, nella tabella `trip_points`. L'app può solo
+aggiungere punti: li legge solo il gestore dalla dashboard di Supabase, non gli altri utenti.
 Nel database le viste `trip_segments` (ogni tratto di ogni viaggio) e `segment_times` (media per tratta negli
 ultimi 60 giorni) mostrano quanto ci mettono davvero i treni.
 
@@ -85,6 +93,9 @@ invia appena c'è rete. Per la stima del ritardo di una direzione l'app usa, in 
    metroa.supabaseAnonKey=eyJ...
    ```
    (oppure le variabili d'ambiente `METROA_SUPABASE_URL` e `METROA_SUPABASE_ANON_KEY`), poi ricompila.
+
+Se il server rifiuta una segnalazione (per esempio una seconda sulla stessa stazione e direzione entro 30 s)
+l'app lo dice con il motivo e non la conta nelle stime; quelle doppie vengono fermate già prima dell'invio.
 
 Le segnalazioni cancellate dalla dashboard (Table Editor → reports) spariscono anche dai telefoni: ogni
 10 minuti l'app confronta la sua copia con il server.
