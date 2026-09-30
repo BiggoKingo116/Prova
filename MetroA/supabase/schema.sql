@@ -132,3 +132,66 @@ drop policy if exists "aggiungere" on public.trip_points;
 create policy "aggiungere" on public.trip_points for insert to anon with check (true);
 revoke all on public.trip_points from anon;
 grant insert (id, trip_id, time_ms, lat, lon, accuracy_m, device_id) on public.trip_points to anon;
+
+-- =====================================================================================
+-- App sviluppatore (MetroA Dev): accesso con account Supabase (email e password).
+-- Solo chi è nella tabella developers può leggere tutto, cancellare e scrivere i numeri dei treni.
+-- Per aggiungere uno sviluppatore: Authentication → Users → Add user, poi
+--   insert into public.developers (user_id) select id from auth.users where email = 'nome@esempio.it';
+-- =====================================================================================
+
+create table if not exists public.developers (
+    user_id  uuid primary key references auth.users (id) on delete cascade,
+    added_at timestamptz not null default now()
+);
+alter table public.developers enable row level security;
+revoke all on public.developers from anon, authenticated;
+grant select on public.developers to authenticated;
+drop policy if exists "se stesso" on public.developers;
+create policy "se stesso" on public.developers for select to authenticated using (user_id = auth.uid());
+
+-- Vero se chi fa la richiesta è uno sviluppatore
+create or replace function public.is_developer() returns boolean
+language sql stable security definer set search_path = public as $$
+    select exists (select 1 from public.developers where user_id = auth.uid())
+$$;
+revoke all on function public.is_developer() from public;
+grant execute on function public.is_developer() to authenticated;
+
+-- Segnalazioni: gli sviluppatori leggono tutto (anche device_id, per lo spam) e possono cancellare
+grant select, delete on public.reports to authenticated;
+drop policy if exists "sviluppatori leggono" on public.reports;
+create policy "sviluppatori leggono" on public.reports for select to authenticated using (public.is_developer());
+drop policy if exists "sviluppatori cancellano" on public.reports;
+create policy "sviluppatori cancellano" on public.reports for delete to authenticated using (public.is_developer());
+grant select on public.trip_segments, public.segment_times to authenticated;
+
+-- Percorsi GPS: leggibili e cancellabili solo dagli sviluppatori
+grant select, delete on public.trip_points to authenticated;
+drop policy if exists "sviluppatori leggono" on public.trip_points;
+create policy "sviluppatori leggono" on public.trip_points for select to authenticated using (public.is_developer());
+drop policy if exists "sviluppatori cancellano" on public.trip_points;
+create policy "sviluppatori cancellano" on public.trip_points for delete to authenticated using (public.is_developer());
+
+-- Numeri dei convogli (matricola scritta sul treno) associati alla corsa programmata. Solo sviluppatori.
+create table if not exists public.train_numbers (
+    id              uuid primary key default gen_random_uuid(),
+    time_ms         bigint   not null,                         -- quando è stato visto
+    station         smallint not null check (station between 0 and 26),
+    direction       text     not null check (direction in ('TO_BATTISTINI', 'TO_ANAGNINA')),
+    train_number    text     not null check (train_number ~ '^[A-Za-z0-9-]{1,12}$'),
+    scheduled_trip  text,                                      -- id della corsa nel GTFS, se riconosciuta
+    scheduled_label text check (char_length(scheduled_label) <= 80), -- es. "treno delle 10:55 da Battistini"
+    note            text check (char_length(note) <= 200),
+    created_by      uuid     not null default auth.uid(),
+    created_at      timestamptz not null default now()
+);
+create index if not exists train_numbers_time on public.train_numbers (time_ms);
+create index if not exists train_numbers_number on public.train_numbers (train_number);
+
+alter table public.train_numbers enable row level security;
+revoke all on public.train_numbers from anon, authenticated;
+grant select, insert, update, delete on public.train_numbers to authenticated;
+drop policy if exists "sviluppatori" on public.train_numbers;
+create policy "sviluppatori" on public.train_numbers for all to authenticated
+    using (public.is_developer()) with check (public.is_developer());

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MetroA Dev: nome e schermata iniziale propri; l'app normale resta raggiungibile dal menu sviluppatore -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application
+        android:label="MetroA Dev"
+        tools:replace="android:label">
+        <activity
+            android:name=".dev.DevActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Nell'app sviluppatore MetroA si apre dal menu, non dalla schermata home -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            tools:node="merge"
+            tools:replace="android:exported">
+            <intent-filter tools:node="removeAll" />
+        </activity>
+
+        <!-- Il widget c'è già nell'app normale -->
+        <receiver android:name=".NextTrainsWidget" tools:node="remove" />
+    </application>
+</manifest>

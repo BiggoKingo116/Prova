@@ -198,6 +198,17 @@ class ScheduleTest {
         assertNull(s.matchTrip(1, Direction.TO_BATTISTINI, ms("08:02:00")))
     }
 
+    /** Per l'app sviluppatore: i treni vicini a una stazione, con un'etichetta leggibile. */
+    @Test fun trainsAtStationHaveReadableLabels() {
+        val s = ZipFile(sampleZip()).use { GtfsParser.parse(it) }
+        val list = s.trainsAt(1, Direction.TO_ANAGNINA, at("08:01:00"))
+        assertEquals(listOf("t1"), list.map { it.tripId })
+        assertEquals("treno delle 08:00 da ${STATIONS[0].name}", list.single().label)
+        assertEquals(at("08:02:00").toInstant().toEpochMilli(), list.single().atStationMs)
+        // Passato da più di 5 minuti: non più in elenco
+        assertTrue(s.trainsAt(1, Direction.TO_ANAGNINA, at("08:10:00")).isEmpty())
+    }
+
     @Test fun alertNeedsSeveralBigDelaysAndFewDenials() {
         val now = ZonedDateTime.parse("2026-09-29T09:10:00+02:00[Europe/Rome]").toInstant().toEpochMilli()
         fun rep(minAgo: Int, offset: Int, station: Int = 5, dir: Direction = Direction.TO_ANAGNINA, src: ReportSource = ReportSource.MANUAL) =

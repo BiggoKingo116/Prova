@@ -8,8 +8,13 @@ App minimale che mostra i treni della linea A sui due binari, con i prossimi arr
 3. Collega il telefono con il debug USB attivo (o usa un emulatore) e premi ▶ Run.
    Per un file APK da installare: Build → Build APK(s).
 
+Dallo stesso progetto escono **due app** (in Android Studio: Build Variants → `userDebug` o `devDebug`):
+- **MetroA** (`user`): l'app per tutti.
+- **MetroA Dev** (`dev`): l'app sviluppatore, installabile accanto (vedi sotto).
+
 Da riga di comando (serve l'Android SDK, con `ANDROID_HOME` impostato o `sdk.dir` in `local.properties`):
-`./gradlew assembleDebug` → l'APK finisce in `app/build/outputs/apk/debug/app-debug.apk`.
+`./gradlew assembleUserDebug assembleDevDebug` → gli APK finiscono in
+`app/build/outputs/apk/user/debug/app-user-debug.apk` e `app/build/outputs/apk/dev/debug/app-dev-debug.apk`.
 
 ## Da dove arrivano i dati
 Il feed GTFS-Realtime di Roma Mobilità non trasmette la metropolitana (né posizioni né arrivi previsti),
@@ -103,6 +108,28 @@ Le segnalazioni cancellate dalla dashboard (Table Editor → reports) spariscono
 La chiave "anon" finisce nell'APK ed è pubblica per costruzione: cosa si può fare lo decidono i permessi del database.
 Senza configurazione l'app funziona lo stesso e tiene le segnalazioni solo sul telefono.
 
+## MetroA Dev (app sviluppatore)
+Si entra con un account Supabase; solo chi è nella tabella `developers` può usarla. Ha tre schede:
+- **Treni**: numero del convoglio (la matricola scritta sul treno) associato alla corsa dell'orario vista in una
+  stazione ("treno delle 10:55 da Battistini"), con nota facoltativa; elenco dei numeri registrati e quante volte
+  è stato visto ogni convoglio. I numeri restano nell'app sviluppatore (tabella `train_numbers`).
+- **GPS**: diagnostica dal vivo. Fonti attive, ultima posizione (fonte, precisione, età), stazione riconosciuta e
+  perché ("troppo vaga", "troppo lontana"), le tre stazioni più vicine, e l'elenco delle posizioni usate o scartate.
+- **Dati**: tutte le segnalazioni (anche l'identificativo del telefono), i viaggi, i tempi medi per tratta e i
+  percorsi GPS condivisi; si possono eliminare una segnalazione, tutto di un telefono (spam) o un viaggio intero.
+
+Il codice sviluppatore è in `app/src/dev` ed entra solo nell'APK Dev.
+
+### Aggiungere uno sviluppatore
+1. Dashboard di Supabase → Authentication → Users → **Add user** → Create new user (email e password, con
+   "Auto Confirm User").
+2. SQL Editor:
+   ```sql
+   insert into public.developers (user_id) select id from auth.users where email = 'nome@esempio.it';
+   ```
+3. Consigliato: Authentication → Sign In / Providers → Email → disattivare "Allow new users to sign up", così
+   nessuno si crea un account da solo (anche se lo facesse, senza la riga in `developers` non vedrebbe niente).
+
 ## Test
-`./gradlew testDebugUnitTest` prova il parser su un GTFS di esempio, il calcolo di posizioni e arrivi e il client del server. Con
+`./gradlew testUserDebugUnitTest testDevDebugUnitTest` prova il parser su un GTFS di esempio, il calcolo di posizioni e arrivi e il client del server. Con
 `METROA_GTFS_ZIP=/percorso/rome_static_gtfs.zip` verifica anche il file reale.

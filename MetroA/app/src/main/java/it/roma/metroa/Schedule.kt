@@ -33,6 +33,16 @@ private const val LOOKBACK_S = 600
  */
 data class Passage(val inS: Int, val beforeS: Int, val afterS: Int)
 
+/**
+ * Un treno dell'orario rispetto a una stazione: [atStationMs] quando ci passa, [originDepartureMs] quando è
+ * partito (o parte) dal capolinea [origin]. [label] lo identifica a parole: "treno delle 10:55 da Battistini".
+ */
+data class TrainAtStation(val tripId: String, val origin: Int, val originDepartureMs: Long, val atStationMs: Long) {
+    val label: String get() = "treno delle ${
+        java.time.Instant.ofEpochMilli(originDepartureMs).atZone(ROME).format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+    } da ${STATIONS[origin].name}"
+}
+
 /** Corsa programmata riconosciuta: [scheduledMs] è l'orario previsto (ms) per ogni stazione che tocca. */
 data class TripMatch(val tripId: String, val scheduledMs: Map<Int, Long>)
 
@@ -146,6 +156,18 @@ class Schedule(
             trip.stations[k] to atMs + ((if (k == 0) trip.dep[0] else trip.arr[k]) - t) * 1000L
         }
         return TripMatch(trip.id, times)
+    }
+
+    /** I treni verso [dir] che passano in [station] fra [beforeS] secondi fa e [afterS] secondi da adesso, in ordine. */
+    fun trainsAt(station: Int, dir: Direction, now: ZonedDateTime, beforeS: Int = 300, afterS: Int = 1800): List<TrainAtStation> {
+        val nowMs = now.toInstant().toEpochMilli()
+        return activeTrips(now).filter { it.first.direction == dir }.mapNotNull { (trip, t) ->
+            val k = trip.stations.indexOf(station)
+            if (k < 0) return@mapNotNull null
+            val at = (if (k == 0) trip.dep[0] else trip.arr[k]) - t
+            if (at < -beforeS || at > afterS) return@mapNotNull null
+            TrainAtStation(trip.id, trip.stations[0], nowMs + (trip.dep[0] - t) * 1000L, nowMs + at * 1000L)
+        }.sortedBy { it.atStationMs }.toList()
     }
 
     /** Scarto (secondi, positivo = in ritardo) fra adesso e il passaggio programmato più vicino, entro 10 minuti. */

@@ -30,6 +30,17 @@ android {
     buildTypes {
         release { isMinifyEnabled = false }
     }
+    // Due app dallo stesso codice: "user" è MetroA per tutti, "dev" è MetroA Dev per gli sviluppatori
+    // (installabile accanto, con in più le schermate in src/dev: numeri dei treni, diagnostica GPS, dati)
+    flavorDimensions += "app"
+    productFlavors {
+        create("user") { dimension = "app" }
+        create("dev") {
+            dimension = "app"
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
